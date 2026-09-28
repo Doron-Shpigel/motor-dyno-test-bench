@@ -21,6 +21,12 @@ class RunState(Enum):
     ERROR = auto()
 
 
+class RunMode(Enum):
+    NONE = auto()
+    PROFILE = auto()
+    MANUAL = auto()
+
+
 @dataclass
 class Sample:
     """One recorded data point."""
@@ -29,6 +35,7 @@ class Sample:
     rpm: float
     dac_raw: int        # 0-4095 value sent to MCP4725
     adc_raw: int        # 0-1023 raw reading from Arduino analog pin
+    target_torque_nm: float = 0.0  # Commanded setpoint (N·m)
 
 
 class DynoSession:
@@ -43,16 +50,18 @@ class DynoSession:
         self._samples: List[Sample] = []
         self._start_time: float | None = None
         self.state: RunState = RunState.IDLE
+        self.run_mode: RunMode = RunMode.NONE
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, mode: RunMode) -> None:
         with self._lock:
             self._samples.clear()
             self._start_time = time.perf_counter()
             self.state = RunState.RUNNING
+            self.run_mode = mode
 
     def finish(self) -> None:
         with self._lock:
@@ -63,6 +72,7 @@ class DynoSession:
             self._samples.clear()
             self._start_time = None
             self.state = RunState.IDLE
+            self.run_mode = RunMode.NONE
 
     # ------------------------------------------------------------------
     # Writing

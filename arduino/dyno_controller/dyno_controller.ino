@@ -7,6 +7,10 @@
 #define SPEED_PIN         A1     // Analog pin reading the FYTH Speed
 #define SERIAL_BAUD       115200 // Fast communication speed with PC
 
+#define RELAY_BRAKE_PIN   2      // D2: Relay for the Brake
+#define RELAY_SENSOR_PIN  3      // D3: Relay for the Torque Sensor
+#define RELAY_AUX_PIN     4      // D4: Auxiliary Relay
+
 // --- EEPROM (Memory) Setup ---
 // We store the PID gains at memory address 0 so they survive being unplugged
 const int EEPROM_ADDR = 0;
@@ -18,6 +22,7 @@ struct PIDSettings {
 
 // --- System State Variables ---
 bool isRunning = false;     // Is the test currently active?
+bool pidEnabled = false;    // Is PID control enabled, or manual DAC?
 float targetTorque = 0.0;   // What the PC requested
 float currentTorque = 0.0;  // What the sensor actually reads
 float currentSpeed = 0.0;   // What the speed sensor reads
@@ -58,6 +63,13 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   Wire.begin();
 
+  pinMode(RELAY_BRAKE_PIN, OUTPUT);
+  pinMode(RELAY_SENSOR_PIN, OUTPUT);
+  pinMode(RELAY_AUX_PIN, OUTPUT);
+  digitalWrite(RELAY_BRAKE_PIN, LOW);
+  digitalWrite(RELAY_SENSOR_PIN, LOW);
+  digitalWrite(RELAY_AUX_PIN, LOW);
+
   mcp4725_write(0); // Safety first: ensure brake is OFF on boot
 
   // Read the saved PID values from the chip's internal memory
@@ -93,7 +105,7 @@ void loop() {
     currentSpeed = (float)analogRead(SPEED_PIN);   
 
     // Only calculate PID and apply brake if the test is running
-    if (isRunning) {
+    if (isRunning && pidEnabled) {
       // Step A: Calculate how far off we are from the target
       float error = targetTorque - currentTorque;
       
@@ -120,6 +132,9 @@ void loop() {
       if (dacValue < 0) dacValue = 0;
 
       // Send the physical voltage command to the brake!
+      mcp4725_write(dacValue);
+    } else if (isRunning && !pidEnabled) {
+      // In manual mode (open-loop), we just send the dacValue we received from PC
       mcp4725_write(dacValue);
     } else {
       // If test is stopped, ensure brake is completely off
@@ -205,7 +220,36 @@ void processCommand(String cmd) {
     int startIdx = cmd.indexOf(':') + 1;
     int endIdx = cmd.indexOf('>', startIdx);
     targetTorque = cmd.substring(startIdx, endIdx).toFloat();
+    pidEnabled = true;
     Serial.print("ACK:SET_TORQUE:");
     Serial.println(targetTorque);
+  }
+  // PC Control Loop: Tell DAC to output a specific value (open-loop)
+  else if (cmd.startsWith("<SET_DAC:")) {
+    int startIdx = cmd.indexOf(':') + 1;
+    int endIdx = cmd.indexOf('>', startIdx);
+    dacValue = cmd.substring(startIdx, endIdx).toInt();
+    pidEnabled = false;
+    Serial.print("ACK:SET_DAC:");
+    Serial.println(dacValue);
+  }
+  // Hardware Relay Control
+  else if (cmd.startsWith("<RELAY:")) {
+    int comma = cmd.indexOf(',');
+    int endIdx = cmd.indexOf('>');
+    String relayName = cmd.substring(7, comma);
+    int state = cmd.substring(comma + 1, endIdx).toInt();
+    
+    if (relayName == "BRAKE") {
+      digitalWrite(RELAY_BRAKE_PIN, state ? HIGH : LOW);
+    } else if (relayName == "SENSOR") {
+      digitalWrite(RELAY_SENSOR_PIN, state ? HIGH : LOW);
+    } else if (relayName == "AUX") {
+      digitalWrite(RELAY_AUX_PIN, state ? HIGH : LOW);
+    }
+    Serial.print("ACK:RELAY:");
+    Serial.print(relayName);
+    Serial.print(",");
+    Serial.println(state);
   }
 }

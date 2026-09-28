@@ -3,17 +3,16 @@ Control Panel Widget.
 
 Left-hand panel that manages the test lifecycle:
   - Load torque-profile CSV
+  - Start / Stop / Reset Profile Mode runs
+  - Manual Control mode (adjust torque manually)
   - Connect / disconnect Arduino
-  - Start / pause / stop the run
-  - Live status readouts (elapsed time, setpoint torque, measured RPM, DAC)
-  - Current log file path
-
-Emits signals so MainWindow can react without tight coupling.
+  - Hardware Relays
+  - Live status readouts
 """
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFrame,
@@ -26,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from modules.data_model import RunState
+from modules.data_model import RunState, RunMode
 from modules.plf import PiecewiseLinearFunction
 
 
@@ -50,29 +49,29 @@ def _value_label(text: str = "—") -> QLabel:
 
 # ── Control Panel ─────────────────────────────────────────────────────────────
 class ControlPanel(QWidget):
-    """
-    Signals
-    -------
-    sig_load_csv()       — user wants to load a torque profile
-    sig_connect()        — user wants to connect serial port
-    sig_disconnect()     — user wants to disconnect
-    sig_start()          — user wants to start/resume the run
-    sig_stop()           — user wants to stop the run
-    sig_reset()          — user wants to reset (clear data)
-    sig_calibration()    — user wants to open calibration dialog
-    """
 
     sig_load_csv    = pyqtSignal()
     sig_connect     = pyqtSignal()
     sig_disconnect  = pyqtSignal()
-    sig_start       = pyqtSignal()
-    sig_stop        = pyqtSignal()
-    sig_reset       = pyqtSignal()
-    sig_calibration = pyqtSignal()
+    
+    sig_start_profile = pyqtSignal()
+    sig_stop_profile  = pyqtSignal()
+
+    sig_start_manual = pyqtSignal()
+    sig_stop_manual  = pyqtSignal()
+    sig_manual_torque_changed = pyqtSignal(float)
+    
+    sig_choose_log_dir = pyqtSignal()
+    sig_save_log       = pyqtSignal()
+    
+    sig_relay_brake  = pyqtSignal(bool)
+    sig_relay_sensor = pyqtSignal(bool)
+    sig_relay_aux    = pyqtSignal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(260)
+        self.setFixedWidth(280)
+        self._manual_torque = 0.0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -92,7 +91,57 @@ class ControlPanel(QWidget):
         self._profile_info.setWordWrap(True)
         self._profile_info.setStyleSheet("font-size: 11px; color: gray;")
         pg_layout.addWidget(self._profile_info)
+        
+        prof_btn_row = QHBoxLayout()
+        self._prof_start_btn = QPushButton("▶  Start")
+        self._prof_start_btn.setEnabled(False)
+        self._prof_start_btn.clicked.connect(self.sig_start_profile)
+        self._prof_stop_btn = QPushButton("■  Stop")
+        self._prof_stop_btn.setEnabled(False)
+        self._prof_stop_btn.clicked.connect(self.sig_stop_profile)
+        prof_btn_row.addWidget(self._prof_start_btn)
+        prof_btn_row.addWidget(self._prof_stop_btn)
+        pg_layout.addLayout(prof_btn_row)
+        
         root.addWidget(prof_group)
+        
+        # ── Manual Control ───────────────────────────────────────────
+        man_group = QGroupBox("Manual Control")
+        mg_layout = QVBoxLayout(man_group)
+        
+        man_ctrl_row = QHBoxLayout()
+        self._man_minus_btn = QPushButton("➖")
+        self._man_minus_btn.setFixedWidth(40)
+        self._man_minus_btn.clicked.connect(self._on_manual_minus)
+        
+        self._man_torque_val = QLabel("0.0 N·m")
+        self._man_torque_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = QFont()
+        font.setPointSize(12)
+        font.setBold(True)
+        self._man_torque_val.setFont(font)
+        
+        self._man_plus_btn = QPushButton("➕")
+        self._man_plus_btn.setFixedWidth(40)
+        self._man_plus_btn.clicked.connect(self._on_manual_plus)
+        
+        man_ctrl_row.addWidget(self._man_minus_btn)
+        man_ctrl_row.addWidget(self._man_torque_val, stretch=1)
+        man_ctrl_row.addWidget(self._man_plus_btn)
+        mg_layout.addLayout(man_ctrl_row)
+        
+        man_btn_row = QHBoxLayout()
+        self._man_start_btn = QPushButton("▶  Start")
+        self._man_start_btn.setEnabled(False)
+        self._man_start_btn.clicked.connect(self.sig_start_manual)
+        self._man_stop_btn = QPushButton("■  Stop")
+        self._man_stop_btn.setEnabled(False)
+        self._man_stop_btn.clicked.connect(self.sig_stop_manual)
+        man_btn_row.addWidget(self._man_start_btn)
+        man_btn_row.addWidget(self._man_stop_btn)
+        mg_layout.addLayout(man_btn_row)
+
+        root.addWidget(man_group)
 
         # ── Connection ───────────────────────────────────────────────
         conn_group = QGroupBox("Arduino Connection")
@@ -120,26 +169,34 @@ class ControlPanel(QWidget):
         cg_layout.addWidget(self._conn_status)
         root.addWidget(conn_group)
 
-        # ── Run control ──────────────────────────────────────────────
-        run_group = QGroupBox("Run Control")
-        rg_layout = QVBoxLayout(run_group)
-
-        self._start_btn = QPushButton("▶  Start")
-        self._start_btn.setEnabled(False)
-        self._start_btn.clicked.connect(self.sig_start)
-        rg_layout.addWidget(self._start_btn)
-
-        self._stop_btn = QPushButton("■  Stop")
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.clicked.connect(self.sig_stop)
-        rg_layout.addWidget(self._stop_btn)
-
-        self._reset_btn = QPushButton("↺  Reset")
-        self._reset_btn.setEnabled(False)
-        self._reset_btn.clicked.connect(self.sig_reset)
-        rg_layout.addWidget(self._reset_btn)
-
-        root.addWidget(run_group)
+        # ── Hardware Control (Relays) ────────────────────────────────
+        hw_group = QGroupBox("Hardware Relays")
+        hw_layout = QVBoxLayout(hw_group)
+        
+        relay_style = (
+            "QPushButton:checked { background-color: #2e663a; color: white; border: 1px solid #1e4a2a; }"
+            "QPushButton:!checked { background-color: #a63232; color: white; border: 1px solid #732323; }"
+        )
+        
+        self._brake_relay_btn = QPushButton("Brake Power")
+        self._brake_relay_btn.setCheckable(True)
+        self._brake_relay_btn.setStyleSheet(relay_style)
+        self._brake_relay_btn.toggled.connect(self.sig_relay_brake)
+        hw_layout.addWidget(self._brake_relay_btn)
+        
+        self._sensor_relay_btn = QPushButton("Torque and speed Sensor")
+        self._sensor_relay_btn.setCheckable(True)
+        self._sensor_relay_btn.setStyleSheet(relay_style)
+        self._sensor_relay_btn.toggled.connect(self.sig_relay_sensor)
+        hw_layout.addWidget(self._sensor_relay_btn)
+        
+        self._aux_relay_btn = QPushButton("Auxiliary")
+        self._aux_relay_btn.setCheckable(True)
+        self._aux_relay_btn.setStyleSheet(relay_style)
+        self._aux_relay_btn.toggled.connect(self.sig_relay_aux)
+        hw_layout.addWidget(self._aux_relay_btn)
+        
+        root.addWidget(hw_group)
         root.addWidget(_separator())
 
         # ── Live readouts ────────────────────────────────────────────
@@ -168,22 +225,49 @@ class ControlPanel(QWidget):
         # ── Log file ─────────────────────────────────────────────────
         log_group = QGroupBox("Log File")
         log_layout = QVBoxLayout(log_group)
+        
         self._log_label = QLabel("—")
         self._log_label.setWordWrap(True)
         self._log_label.setStyleSheet("font-size: 10px; color: gray;")
         log_layout.addWidget(self._log_label)
+        
+        log_btn_row = QHBoxLayout()
+        self._choose_log_dir_btn = QPushButton("Choose Dir…")
+        self._choose_log_dir_btn.clicked.connect(self.sig_choose_log_dir)
+        self._save_log_btn = QPushButton("Save Log")
+        self._save_log_btn.setEnabled(False)
+        self._save_log_btn.clicked.connect(self.sig_save_log)
+        
+        log_btn_row.addWidget(self._choose_log_dir_btn)
+        log_btn_row.addWidget(self._save_log_btn)
+        log_layout.addLayout(log_btn_row)
+        
         root.addWidget(log_group)
-
-        # ── Calibration ──────────────────────────────────────────────
-        cal_btn = QPushButton("⚙  Calibration / Settings…")
-        cal_btn.clicked.connect(self.sig_calibration)
-        root.addWidget(cal_btn)
 
         root.addStretch(1)
 
     # ------------------------------------------------------------------
     # Update helpers (called from MainWindow)
     # ------------------------------------------------------------------
+    
+    @pyqtSlot()
+    def _on_manual_minus(self) -> None:
+        self._manual_torque = max(0.0, self._manual_torque - 0.1)
+        self._man_torque_val.setText(f"{self._manual_torque:.1f} N·m")
+        self.sig_manual_torque_changed.emit(self._manual_torque)
+
+    @pyqtSlot()
+    def _on_manual_plus(self) -> None:
+        self._manual_torque += 0.1
+        self._man_torque_val.setText(f"{self._manual_torque:.1f} N·m")
+        self.sig_manual_torque_changed.emit(self._manual_torque)
+        
+    def get_manual_torque(self) -> float:
+        return self._manual_torque
+        
+    def reset_manual_torque(self) -> None:
+        self._manual_torque = 0.0
+        self._man_torque_val.setText("0.0 N·m")
 
     def set_profile_info(self, plf: PiecewiseLinearFunction | None) -> None:
         if plf and plf.is_loaded():
@@ -212,27 +296,71 @@ class ControlPanel(QWidget):
             self._connect_btn.setEnabled(True)
             self._disconnect_btn.setEnabled(False)
 
-    def set_run_state(self, state: RunState, can_start: bool) -> None:
+    def set_run_state(self, state: RunState, mode: RunMode, can_start_profile: bool, connected: bool) -> None:
         running = state == RunState.RUNNING
         idle    = state in (RunState.IDLE, RunState.FINISHED, RunState.ERROR)
+        finished = state == RunState.FINISHED
+        
+        # Mutual Exclusion Logic
+        if mode == RunMode.PROFILE and not idle:
+            # Profile running or finished: disable manual controls completely
+            self._prof_start_btn.setEnabled(False)
+            self._prof_stop_btn.setEnabled(running)
+            
+            self._man_start_btn.setEnabled(False)
+            self._man_stop_btn.setEnabled(False)
+            self._man_plus_btn.setEnabled(False)
+            self._man_minus_btn.setEnabled(False)
+            self._load_btn.setEnabled(False)
+            
+        elif mode == RunMode.MANUAL and not idle:
+            # Manual running or finished: disable profile controls completely
+            self._prof_start_btn.setEnabled(False)
+            self._prof_stop_btn.setEnabled(False)
+            self._load_btn.setEnabled(False)
+            
+            self._man_start_btn.setEnabled(False)
+            self._man_stop_btn.setEnabled(running)
+            self._man_plus_btn.setEnabled(True)
+            self._man_minus_btn.setEnabled(True)
+            
+        else: # NONE / IDLE
+            # Neither is running. Enable controls based on connection / loaded state
+            self._load_btn.setEnabled(True)
+            self._prof_start_btn.setEnabled(can_start_profile and connected)
+            self._prof_stop_btn.setEnabled(False)
+            
+            self._man_start_btn.setEnabled(connected)
+            self._man_stop_btn.setEnabled(False)
+            self._man_plus_btn.setEnabled(True)
+            self._man_minus_btn.setEnabled(True)
+            
+        # Log buttons
+        self._choose_log_dir_btn.setEnabled(not running)
+        self._save_log_btn.setEnabled(finished)
 
-        self._start_btn.setEnabled(can_start and not running)
-        self._stop_btn.setEnabled(running)
-        self._reset_btn.setEnabled(not running and state != RunState.IDLE)
 
-    def update_live(
+    def is_sensor_relay_on(self) -> bool:
+        return self._sensor_relay_btn.isChecked()
+
+    def update_run_stats(self, elapsed_s: float, samples: int) -> None:
+        self._time_val.setText(f"{elapsed_s:7.2f} s")
+        self._samples_val.setText(f"{samples}")
+
+    def update_sensor_readings(
         self,
-        elapsed_s: float,
         torque_nm: float,
         rpm: float,
         dac_raw: int,
-        samples: int,
     ) -> None:
-        self._time_val.setText(f"{elapsed_s:7.2f} s")
-        self._torque_val.setText(f"{torque_nm:7.3f} N·m")
-        self._rpm_val.setText(f"{rpm:7.1f}")
+        if self.is_sensor_relay_on():
+            self._torque_val.setText(f"{torque_nm:7.3f} N·m")
+            self._rpm_val.setText(f"{rpm:7.1f}")
+        else:
+            self._torque_val.setText("—")
+            self._rpm_val.setText("—")
+            
         self._dac_val.setText(f"{dac_raw}")
-        self._samples_val.setText(f"{samples}")
 
     def set_log_path(self, path: Path | None) -> None:
         self._log_label.setText(str(path) if path else "—")

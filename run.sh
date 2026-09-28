@@ -6,24 +6,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Prefer python3
-PYTHON=$(command -v python3 2>/dev/null || command -v python)
-
-if [[ -z "$PYTHON" ]]; then
-    echo "ERROR: Python 3 not found. Install python3 via your package manager."
+if ! command -v conda &> /dev/null; then
+    echo "ERROR: Conda is not installed or not in PATH."
+    echo "Please download and install Miniconda or Anaconda:"
+    echo "https://docs.conda.io/en/latest/miniconda.html"
     exit 1
 fi
 
-PY_VER=$("$PYTHON" -c "import sys; print(sys.version_info.major * 10 + sys.version_info.minor)")
-if (( PY_VER < 311 )); then
-    echo "ERROR: Python 3.11+ required (found $("$PYTHON" --version))."
+if [ ! -d ".env" ]; then
+    echo "ERROR: Conda environment '.env' not found in the project directory."
+    echo "Please run: conda env create --prefix .env -f environment.yml"
     exit 1
 fi
-
-# Install / upgrade requirements
-echo "Checking dependencies…"
-"$PYTHON" -m pip install -q --upgrade pip
-"$PYTHON" -m pip install -q -r requirements.txt
 
 # Linux: serial port access requires the user to be in the 'dialout' group.
 # If not already a member, add and remind the user to re-login.
@@ -36,5 +30,15 @@ if [[ "$(uname)" == "Linux" ]]; then
     fi
 fi
 
-echo "Starting Dyno Control Software…"
-"$PYTHON" main.py
+echo "Activating Conda environment and starting Dyno Control Software…"
+CONDA_BASE=$(conda info --base)
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate ./.env
+
+if [[ "${1:-}" == "--debug" ]]; then
+    echo "Running in debug mode. Terminal will stay open."
+    python main.py --debug
+else
+    echo "Running in background. Terminal will close."
+    nohup python main.py >/dev/null 2>&1 &
+fi

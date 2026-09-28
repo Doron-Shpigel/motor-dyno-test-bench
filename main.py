@@ -96,7 +96,12 @@ def main() -> None:
         }
     """)
 
-    window = MainWindow()
+    import argparse
+    parser = argparse.ArgumentParser(description="Dyno Control")
+    parser.add_argument("--debug", action="store_true", help="Print status messages to terminal")
+    args, unknown = parser.parse_known_args()
+
+    window = MainWindow(debug=args.debug)
     window.show()
     sys.exit(app.exec())
 

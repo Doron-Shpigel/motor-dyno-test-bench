@@ -55,12 +55,9 @@ class CSVLogger:
     # File management
     # ------------------------------------------------------------------
 
-    def open(self, output_dir: str | Path = ".") -> Path:
+    def open_temp(self) -> Path:
         """
-        Create a new log file in *output_dir*.
-
-        The filename is auto-generated from the current timestamp:
-            dyno_log_YYYYMMDD_HHMMSS.csv
+        Create a new temporary log file `temp_run.csv` in the current directory.
 
         Returns the full path of the created file.
         Raises RuntimeError if a file is already open.
@@ -68,17 +65,32 @@ class CSVLogger:
         if self._file is not None:
             raise RuntimeError("A log file is already open. Call close() first.")
 
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._path = output_dir / f"dyno_log_{ts}.csv"
+        self._path = Path("temp_run.csv")
 
         self._file = self._path.open("w", newline="")
         self._writer = csv.DictWriter(self._file, fieldnames=FIELDNAMES)
         self._writer.writeheader()
         self._file.flush()
         return self._path
+
+    def save_to(self, dest_dir: str | Path, timestamp: str) -> Path | None:
+        """
+        Move the temp file to the final destination with the timestamp.
+        """
+        if not self._path or not self._path.exists():
+            return None
+            
+        if self._file is not None:
+            self.close()
+            
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        final_path = dest_dir / f"dyno_log_{timestamp}.csv"
+        
+        import shutil
+        shutil.move(str(self._path), str(final_path))
+        self._path = final_path
+        return final_path
 
     def open_explicit(self, filepath: str | Path) -> Path:
         """Open a specific file path instead of auto-generating one."""

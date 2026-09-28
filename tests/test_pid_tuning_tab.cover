@@ -1,0 +1,388 @@
+    1: """
+       Unit and integration tests for the PID & Stability Tuning Tab and MainWindow wiring.
+       
+       Tests:
+       1. PidTuningTab unit tests:
+          - Initial default state and helper properties
+          - Read button triggers sig_read_pid and sig_send_command("<GET_PID>")
+          - Optional command_sender callback invocation
+          - Save button with valid inputs formats "<SET_PID:p,i,d>" with 4 decimals
+          - Save button boundary values (0.0, 1000.0)
+          - Save button rejects invalid inputs (negative, text, NaN, Inf, empty, >1000)
+          - validate_inputs allow_zero flag
+          - Update Software Parameters emits sig_update_stability_params(tol, settle)
+          - set_stored_values updates displayed text and handles non-finite values
+          - get_stored_values returns current stored text
+          - set_stability_status toggles STABLE vs WAITING labels and styles
+       2. MainWindow integration tests:
+          - Signal routing from PID tab to mock worker (connected vs disconnected)
+          - Telemetry reception routing to PID tab stored values
+          - Arduino ready event triggers auto-read of PID values
+          - Software stability parameter forwarding to stability monitor (if present)
+       """
+       
+    1: import math
+    1: import sys
+    1: import unittest
+    1: from unittest.mock import MagicMock, patch
+       
+    1: from PyQt6.QtCore import QObject, Qt, pyqtSignal
+    1: from PyQt6.QtTest import QTest
+    1: from PyQt6.QtWidgets import QApplication
+       
+    1: from gui.main_window import MainWindow
+    1: from gui.pid_tuning_tab import PidTuningTab
+       
+       # Ensure a single QApplication instance exists for offscreen headless tests
+    1: app = QApplication.instance()
+    1: if app is None:
+    1:     app = QApplication(sys.argv)
+       
+       
+    2: class MockSerialWorker(QObject):
+    1:     """Headless mock of SerialWorker for testing MainWindow routing."""
+       
+    1:     connected = pyqtSignal()
+    1:     disconnected = pyqtSignal()
+    1:     speed_received = pyqtSignal(int)
+    1:     error_received = pyqtSignal(str)
+    1:     ready = pyqtSignal()
+    1:     pid_received = pyqtSignal(float, float, float)
+    1:     data_received = pyqtSignal(float, float, int)
+       
+    1:     def __init__(self, port: str = "COM_MOCK", parent=None):
+               super().__init__(parent)
+               self.port = port
+               self.sent_commands: list[str] = []
+               self._running = False
+       
+    1:     def send_command(self, cmd: str) -> None:
+               self.sent_commands.append(cmd)
+       
+    1:     def send_get_pid(self) -> None:
+               self.send_command("<GET_PID>")
+       
+    1:     def send_set_pid(self, kp: float, ki: float, kd: float) -> None:
+               self.send_command(f"<SET_PID:{kp:.4f},{ki:.4f},{kd:.4f}>")
+       
+    1:     def start(self) -> None:
+               self._running = True
+       
+    1:     def stop(self) -> None:
+               self._running = False
+       
+    1:     def wait(self, timeout: int = 3000) -> bool:
+               return True
+       
+       
+    2: class TestPidTuningTabUnit(unittest.TestCase):
+    1:     """Unit tests for PidTuningTab widget."""
+       
+    1:     def setUp(self):
+               self.tab = PidTuningTab()
+       
+    1:     def tearDown(self):
+               self.tab.deleteLater()
+               app.processEvents()
+       
+    1:     def test_default_state(self):
+               """Verify initial default display, inputs, spinboxes, and properties."""
+               self.assertEqual(self.tab.get_stored_values(), ("—", "—", "—"))
+               self.assertEqual(self.tab._inputs["kp"].text(), "")
+               self.assertEqual(self.tab._inputs["ki"].text(), "")
+               self.assertEqual(self.tab._inputs["kd"].text(), "")
+               self.assertAlmostEqual(self.tab.tolerance, 2.0)
+               self.assertAlmostEqual(self.tab.settling_time, 1.5)
+               self.assertFalse(self.tab.is_stable)
+               self.assertEqual(self.tab._status_label.text(), "WAITING")
+               self.assertIsNone(self.tab.last_error)
+       
+    1:     def test_read_button_emits_signals(self):
+               """Clicking 'Read from Arduino' emits sig_read_pid and sig_send_command('<GET_PID>')."""
+               read_fired: list[bool] = []
+               cmd_fired: list[str] = []
+       
+               self.tab.sig_read_pid.connect(lambda: read_fired.append(True))
+               self.tab.sig_send_command.connect(cmd_fired.append)
+       
+               QTest.mouseClick(self.tab._read_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertEqual(len(read_fired), 1)
+               self.assertEqual(cmd_fired, ["<GET_PID>"])
+       
+    1:     def test_read_button_with_command_sender(self):
+               """Optional command_sender callback is invoked on read."""
+               callback_commands: list[str] = []
+               custom_tab = PidTuningTab(command_sender=callback_commands.append)
+       
+               QTest.mouseClick(custom_tab._read_btn, Qt.MouseButton.LeftButton)
+               self.assertEqual(callback_commands, ["<GET_PID>"])
+               custom_tab.deleteLater()
+       
+    1:     def test_save_valid_inputs(self):
+               """Valid PID inputs emit sig_set_pid and sig_send_command with 4-decimal formatting."""
+               self.tab._inputs["kp"].setText("125.5")
+               self.tab._inputs["ki"].setText("15.25")
+               self.tab._inputs["kd"].setText("1.125")
+       
+               pid_emitted: list[tuple[float, float, float]] = []
+               cmd_emitted: list[str] = []
+       
+               self.tab.sig_set_pid.connect(lambda p, i, d: pid_emitted.append((p, i, d)))
+               self.tab.sig_send_command.connect(cmd_emitted.append)
+       
+               QTest.mouseClick(self.tab._save_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertEqual(pid_emitted, [(125.5, 15.25, 1.125)])
+               self.assertEqual(cmd_emitted, ["<SET_PID:125.5000,15.2500,1.1250>"])
+               self.assertIsNone(self.tab.last_error)
+               self.assertEqual(self.tab._feedback_label.text(), "")
+       
+    1:     def test_save_boundary_values(self):
+               """Zero values and maximum 1000.0 values are accepted."""
+               # Test zero values (common for PD / PI control)
+               self.tab._inputs["kp"].setText("0.0")
+               self.tab._inputs["ki"].setText("0.0")
+               self.tab._inputs["kd"].setText("0.0")
+       
+               cmds: list[str] = []
+               self.tab.sig_send_command.connect(cmds.append)
+       
+               QTest.mouseClick(self.tab._save_btn, Qt.MouseButton.LeftButton)
+               self.assertEqual(cmds, ["<SET_PID:0.0000,0.0000,0.0000>"])
+       
+               # Test ceiling limit 1000.0
+               cmds.clear()
+               self.tab._inputs["kp"].setText("1000.0")
+               self.tab._inputs["ki"].setText("1000.0")
+               self.tab._inputs["kd"].setText("1000.0")
+       
+               QTest.mouseClick(self.tab._save_btn, Qt.MouseButton.LeftButton)
+               self.assertEqual(cmds, ["<SET_PID:1000.0000,1000.0000,1000.0000>"])
+       
+    1:     def test_save_invalid_inputs_comprehensive(self):
+               """Invalid inputs are rejected without emitting signals and set last_error."""
+               invalid_cases = [
+                   ("-0.01", "1.0", "1.0", "negative Kp"),
+                   ("1.0", "-1.0", "1.0", "negative Ki"),
+                   ("1.0", "1.0", "-0.5", "negative Kd"),
+                   ("1000.0001", "1.0", "1.0", "Kp exceeds 1000"),
+                   ("1.0", "1500.0", "1.0", "Ki exceeds 1000"),
+                   ("1.0", "1.0", "9999.0", "Kd exceeds 1000"),
+                   ("abc", "1.0", "1.0", "non-numeric Kp"),
+                   ("1.0", "invalid", "1.0", "non-numeric Ki"),
+                   ("1.0", "1.0", "1.2.3", "malformed float Kd"),
+                   ("", "1.0", "1.0", "empty Kp"),
+                   ("   ", "1.0", "1.0", "whitespace Kp"),
+                   ("1.0", "", "1.0", "empty Ki"),
+                   ("1.0", "1.0", "", "empty Kd"),
+                   ("nan", "1.0", "1.0", "NaN Kp"),
+                   ("NaN", "1.0", "1.0", "NaN uppercase Kp"),
+                   ("inf", "1.0", "1.0", "Inf Kp"),
+                   ("-inf", "1.0", "1.0", "-Inf Kp"),
+                   ("Infinity", "1.0", "1.0", "Infinity string Kp"),
+               ]
+       
+               for kp, ki, kd, desc in invalid_cases:
+                   self.tab._inputs["kp"].setText(kp)
+                   self.tab._inputs["ki"].setText(ki)
+                   self.tab._inputs["kd"].setText(kd)
+       
+                   emitted_cmds: list[str] = []
+                   emitted_pids: list[tuple[float, float, float]] = []
+                   self.tab.sig_send_command.connect(emitted_cmds.append)
+                   self.tab.sig_set_pid.connect(lambda p, i, d: emitted_pids.append((p, i, d)))
+       
+                   QTest.mouseClick(self.tab._save_btn, Qt.MouseButton.LeftButton)
+       
+                   self.assertEqual(
+                       emitted_cmds,
+                       [],
+                       f"Validation failed to reject invalid case ({desc}): kp='{kp}', ki='{ki}', kd='{kd}'",
+                   )
+                   self.assertEqual(emitted_pids, [])
+                   self.assertIsNotNone(self.tab.last_error)
+                   self.assertTrue(len(self.tab._feedback_label.text()) > 0)
+       
+                   # Disconnect for next iteration
+                   self.tab.sig_send_command.disconnect()
+                   self.tab.sig_set_pid.disconnect()
+       
+    1:     def test_validate_inputs_allow_zero_false(self):
+               """When allow_zero is False, 0.0 is rejected."""
+               self.tab._inputs["kp"].setText("0.0")
+               self.tab._inputs["ki"].setText("1.0")
+               self.tab._inputs["kd"].setText("1.0")
+       
+               result = self.tab.validate_inputs(allow_zero=False)
+               self.assertIsNone(result)
+               self.assertIn("greater than zero", self.tab.last_error or "")
+       
+    1:     def test_update_software_parameters(self):
+               """Updating software parameters emits sig_update_stability_params with spinbox values."""
+               self.tab._tolerance_spin.setValue(4.5)
+               self.tab._settling_spin.setValue(3.0)
+       
+               params_emitted: list[tuple[float, float]] = []
+               self.tab.sig_update_stability_params.connect(
+                   lambda tol, settle: params_emitted.append((tol, settle))
+               )
+       
+               QTest.mouseClick(self.tab._update_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertEqual(params_emitted, [(4.5, 3.0)])
+               self.assertAlmostEqual(self.tab.tolerance, 4.5)
+               self.assertAlmostEqual(self.tab.settling_time, 3.0)
+       
+    1:     def test_set_stored_values(self):
+               """set_stored_values formats finite floats to 4 decimals and guards against non-finite values."""
+               self.tab.set_stored_values(120.5, 15.0, 2.5)
+               self.assertEqual(self.tab.get_stored_values(), ("120.5000", "15.0000", "2.5000"))
+       
+               # Test non-finite value displays ERR
+               self.tab.set_stored_values(float("nan"), 10.0, float("inf"))
+               self.assertEqual(self.tab.get_stored_values(), ("ERR", "10.0000", "ERR"))
+       
+    1:     def test_set_stability_status(self):
+               """set_stability_status updates status label text and styling."""
+               self.tab.set_stability_status(True)
+               self.assertTrue(self.tab.is_stable)
+               self.assertEqual(self.tab._status_label.text(), "STABLE")
+               self.assertIn("#1e4a2a", self.tab._status_label.styleSheet())
+       
+               self.tab.set_stability_status(False)
+               self.assertFalse(self.tab.is_stable)
+               self.assertEqual(self.tab._status_label.text(), "WAITING")
+               self.assertIn("#313244", self.tab._status_label.styleSheet())
+       
+       
+    2: class TestMainWindowPidIntegration(unittest.TestCase):
+    1:     """Integration tests verifying MainWindow signal routing to mock SerialWorker."""
+       
+    1:     def setUp(self):
+               self.window = MainWindow()
+               self.mock_worker = MockSerialWorker(parent=self.window)
+               self.window._worker = self.mock_worker
+               # Connect worker signals as MainWindow._start_worker would
+               self.mock_worker.ready.connect(self.window._on_arduino_ready)
+               self.mock_worker.pid_received.connect(self.window._pid_tab.set_stored_values)
+               self.mock_worker.pid_received.connect(self.window._on_pid_received)
+       
+    1:     def tearDown(self):
+               self.window.close()
+               self.window.deleteLater()
+               app.processEvents()
+       
+    1:     def test_read_pid_routing_when_connected(self):
+               """When connected, clicking 'Read from Arduino' transmits <GET_PID> via worker."""
+               self.window._connected = True
+       
+               QTest.mouseClick(self.window._pid_tab._read_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertIn("<GET_PID>", self.mock_worker.sent_commands)
+               self.assertIn("Sent PID command: <GET_PID>", self.window._status_msg.text())
+       
+    1:     def test_read_pid_routing_when_disconnected(self):
+               """When disconnected, clicking 'Read from Arduino' does not transmit and reports error."""
+               self.window._connected = False
+       
+               QTest.mouseClick(self.window._pid_tab._read_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertEqual(self.mock_worker.sent_commands, [])
+               self.assertIn("Cannot send PID command: Arduino is not connected.", self.window._status_msg.text())
+       
+    1:     def test_save_pid_routing_when_connected(self):
+               """When connected, clicking 'Save to Arduino' transmits formatted command via worker."""
+               self.window._connected = True
+               self.window._pid_tab._inputs["kp"].setText("25.0")
+               self.window._pid_tab._inputs["ki"].setText("2.5")
+               self.window._pid_tab._inputs["kd"].setText("0.25")
+       
+               QTest.mouseClick(self.window._pid_tab._save_btn, Qt.MouseButton.LeftButton)
+       
+               expected_cmd = "<SET_PID:25.0000,2.5000,0.2500>"
+               self.assertIn(expected_cmd, self.mock_worker.sent_commands)
+               self.assertIn(f"Sent PID command: {expected_cmd}", self.window._status_msg.text())
+       
+    1:     def test_save_pid_routing_when_disconnected(self):
+               """When disconnected, clicking 'Save to Arduino' does not transmit and reports error."""
+               self.window._connected = False
+               self.window._pid_tab._inputs["kp"].setText("25.0")
+               self.window._pid_tab._inputs["ki"].setText("2.5")
+               self.window._pid_tab._inputs["kd"].setText("0.25")
+       
+               QTest.mouseClick(self.window._pid_tab._save_btn, Qt.MouseButton.LeftButton)
+       
+               self.assertEqual(self.mock_worker.sent_commands, [])
+               self.assertIn("Cannot send PID command: Arduino is not connected.", self.window._status_msg.text())
+       
+    1:     def test_direct_pid_helper_slots(self):
+               """_on_read_pid and _on_set_pid route commands via worker."""
+               self.window._connected = True
+       
+               self.window._on_read_pid()
+               self.assertIn("<GET_PID>", self.mock_worker.sent_commands)
+       
+               self.window._on_set_pid(10.0, 1.0, 0.1)
+               self.assertIn("<SET_PID:10.0000,1.0000,0.1000>", self.mock_worker.sent_commands)
+       
+    1:     def test_telemetry_updates_pid_tab(self):
+               """When worker emits pid_received, MainWindow updates PID tab stored values and status bar."""
+               self.mock_worker.pid_received.emit(45.1234, 4.5678, 0.9876)
+       
+               stored = self.window._pid_tab.get_stored_values()
+               self.assertEqual(stored, ("45.1234", "4.5678", "0.9876"))
+               self.assertIn("Arduino PID updated", self.window._status_msg.text())
+       
+    1:     def test_arduino_ready_triggers_auto_query(self):
+               """When worker emits ready, MainWindow queries PID parameters automatically."""
+               self.mock_worker.ready.emit()
+       
+               self.assertIn("<GET_PID>", self.mock_worker.sent_commands)
+               self.assertIn("Arduino ready. Querying PID parameters...", self.window._status_msg.text())
+       
+    1:     def test_software_stability_update_routing(self):
+               """Updating software params forwards to _stability_monitor if present."""
+               # Create a mock stability monitor
+               mock_monitor = MagicMock()
+               self.window._stability_monitor = mock_monitor
+       
+               self.window._pid_tab._tolerance_spin.setValue(3.5)
+               self.window._pid_tab._settling_spin.setValue(2.0)
+       
+               QTest.mouseClick(self.window._pid_tab._update_btn, Qt.MouseButton.LeftButton)
+       
+               mock_monitor.set_parameters.assert_called_once_with(3.5, 2.0)
+               self.assertIn("Stability parameters updated: ±3.5%, 2.0s", self.window._status_msg.text())
+       
+    1:     def test_start_worker_wires_pid_and_ready_signals(self):
+               """MainWindow._start_worker connects ready, pid_received to pid_tab and status."""
+               created_workers: list[MockSerialWorker] = []
+       
+               def worker_factory(port: str, parent=None):
+                   w = MockSerialWorker(port=port, parent=parent)
+                   created_workers.append(w)
+                   return w
+       
+               with patch("gui.main_window.SerialWorker", side_effect=worker_factory):
+                   self.window._port = "COM_TEST"
+                   self.window._start_worker()
+       
+                   self.assertEqual(len(created_workers), 1)
+                   worker = created_workers[0]
+                   self.assertTrue(worker._running)
+       
+                   # Test ready signal emission on the newly started worker
+                   worker.ready.emit()
+                   self.assertIn("<GET_PID>", worker.sent_commands)
+       
+                   # Test pid_received signal emission on the newly started worker
+                   worker.pid_received.emit(100.0, 10.0, 1.0)
+                   self.assertEqual(self.window._pid_tab.get_stored_values(), ("100.0000", "10.0000", "1.0000"))
+       
+                   self.window._stop_worker()
+                   self.assertFalse(worker._running)
+       
+       
+    1: if __name__ == "__main__":
+    1:     unittest.main()
