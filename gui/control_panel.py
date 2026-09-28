@@ -1,0 +1,238 @@
+"""
+Control Panel Widget.
+
+Left-hand panel that manages the test lifecycle:
+  - Load torque-profile CSV
+  - Connect / disconnect Arduino
+  - Start / pause / stop the run
+  - Live status readouts (elapsed time, setpoint torque, measured RPM, DAC)
+  - Current log file path
+
+Emits signals so MainWindow can react without tight coupling.
+"""
+
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from modules.data_model import RunState
+from modules.plf import PiecewiseLinearFunction
+
+
+# ── tiny helper ──────────────────────────────────────────────────────────────
+def _separator() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.HLine)
+    f.setFrameShadow(QFrame.Shadow.Sunken)
+    return f
+
+
+def _value_label(text: str = "—") -> QLabel:
+    lbl = QLabel(text)
+    font = QFont()
+    font.setPointSize(13)
+    font.setBold(True)
+    lbl.setFont(font)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    return lbl
+
+
+# ── Control Panel ─────────────────────────────────────────────────────────────
+class ControlPanel(QWidget):
+    """
+    Signals
+    -------
+    sig_load_csv()       — user wants to load a torque profile
+    sig_connect()        — user wants to connect serial port
+    sig_disconnect()     — user wants to disconnect
+    sig_start()          — user wants to start/resume the run
+    sig_stop()           — user wants to stop the run
+    sig_reset()          — user wants to reset (clear data)
+    sig_calibration()    — user wants to open calibration dialog
+    """
+
+    sig_load_csv    = pyqtSignal()
+    sig_connect     = pyqtSignal()
+    sig_disconnect  = pyqtSignal()
+    sig_start       = pyqtSignal()
+    sig_stop        = pyqtSignal()
+    sig_reset       = pyqtSignal()
+    sig_calibration = pyqtSignal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(260)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
+        root.setSpacing(10)
+
+        # ── Profile ──────────────────────────────────────────────────
+        prof_group = QGroupBox("Torque Profile")
+        pg_layout = QVBoxLayout(prof_group)
+
+        self._load_btn = QPushButton("Load CSV…")
+        self._load_btn.clicked.connect(self.sig_load_csv)
+        pg_layout.addWidget(self._load_btn)
+
+        self._profile_info = QLabel("No profile loaded.")
+        self._profile_info.setWordWrap(True)
+        self._profile_info.setStyleSheet("font-size: 11px; color: gray;")
+        pg_layout.addWidget(self._profile_info)
+        root.addWidget(prof_group)
+
+        # ── Connection ───────────────────────────────────────────────
+        conn_group = QGroupBox("Arduino Connection")
+        cg_layout = QVBoxLayout(conn_group)
+
+        self._port_label = QLabel("Port: —")
+        self._port_label.setStyleSheet("font-size: 11px;")
+        cg_layout.addWidget(self._port_label)
+
+        btn_row = QHBoxLayout()
+        self._connect_btn = QPushButton("Connect…")
+        self._connect_btn.clicked.connect(self.sig_connect)
+        self._disconnect_btn = QPushButton("Disconnect")
+        self._disconnect_btn.clicked.connect(self.sig_disconnect)
+        self._disconnect_btn.setEnabled(False)
+        btn_row.addWidget(self._connect_btn)
+        btn_row.addWidget(self._disconnect_btn)
+        cg_layout.addLayout(btn_row)
+
+        self._conn_status = QLabel("Disconnected")
+        self._conn_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._conn_status.setStyleSheet(
+            "background: #3b3b4f; border-radius: 4px; padding: 3px; font-size: 11px;"
+        )
+        cg_layout.addWidget(self._conn_status)
+        root.addWidget(conn_group)
+
+        # ── Run control ──────────────────────────────────────────────
+        run_group = QGroupBox("Run Control")
+        rg_layout = QVBoxLayout(run_group)
+
+        self._start_btn = QPushButton("▶  Start")
+        self._start_btn.setEnabled(False)
+        self._start_btn.clicked.connect(self.sig_start)
+        rg_layout.addWidget(self._start_btn)
+
+        self._stop_btn = QPushButton("■  Stop")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self.sig_stop)
+        rg_layout.addWidget(self._stop_btn)
+
+        self._reset_btn = QPushButton("↺  Reset")
+        self._reset_btn.setEnabled(False)
+        self._reset_btn.clicked.connect(self.sig_reset)
+        rg_layout.addWidget(self._reset_btn)
+
+        root.addWidget(run_group)
+        root.addWidget(_separator())
+
+        # ── Live readouts ────────────────────────────────────────────
+        live_group = QGroupBox("Live Readings")
+        lg = QVBoxLayout(live_group)
+
+        def _row(label: str) -> QLabel:
+            row_w = QWidget()
+            rl = QHBoxLayout(row_w)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.addWidget(QLabel(label))
+            val = _value_label()
+            rl.addWidget(val)
+            lg.addWidget(row_w)
+            return val
+
+        self._time_val    = _row("Elapsed:")
+        self._torque_val  = _row("Torque:")
+        self._rpm_val     = _row("RPM:")
+        self._dac_val     = _row("DAC:")
+        self._samples_val = _row("Samples:")
+        root.addWidget(live_group)
+
+        root.addWidget(_separator())
+
+        # ── Log file ─────────────────────────────────────────────────
+        log_group = QGroupBox("Log File")
+        log_layout = QVBoxLayout(log_group)
+        self._log_label = QLabel("—")
+        self._log_label.setWordWrap(True)
+        self._log_label.setStyleSheet("font-size: 10px; color: gray;")
+        log_layout.addWidget(self._log_label)
+        root.addWidget(log_group)
+
+        # ── Calibration ──────────────────────────────────────────────
+        cal_btn = QPushButton("⚙  Calibration / Settings…")
+        cal_btn.clicked.connect(self.sig_calibration)
+        root.addWidget(cal_btn)
+
+        root.addStretch(1)
+
+    # ------------------------------------------------------------------
+    # Update helpers (called from MainWindow)
+    # ------------------------------------------------------------------
+
+    def set_profile_info(self, plf: PiecewiseLinearFunction | None) -> None:
+        if plf and plf.is_loaded():
+            self._profile_info.setText(plf.summary())
+            self._profile_info.setStyleSheet("font-size: 11px; color: #a6e3a1;")
+        else:
+            self._profile_info.setText("No profile loaded.")
+            self._profile_info.setStyleSheet("font-size: 11px; color: gray;")
+
+    def set_port_label(self, port: str) -> None:
+        self._port_label.setText(f"Port: {port or '—'}")
+
+    def set_connection_status(self, connected: bool) -> None:
+        if connected:
+            self._conn_status.setText("Connected")
+            self._conn_status.setStyleSheet(
+                "background: #1e4a2a; color: #a6e3a1; border-radius: 4px; padding: 3px; font-size: 11px;"
+            )
+            self._connect_btn.setEnabled(False)
+            self._disconnect_btn.setEnabled(True)
+        else:
+            self._conn_status.setText("Disconnected")
+            self._conn_status.setStyleSheet(
+                "background: #3b3b4f; border-radius: 4px; padding: 3px; font-size: 11px;"
+            )
+            self._connect_btn.setEnabled(True)
+            self._disconnect_btn.setEnabled(False)
+
+    def set_run_state(self, state: RunState, can_start: bool) -> None:
+        running = state == RunState.RUNNING
+        idle    = state in (RunState.IDLE, RunState.FINISHED, RunState.ERROR)
+
+        self._start_btn.setEnabled(can_start and not running)
+        self._stop_btn.setEnabled(running)
+        self._reset_btn.setEnabled(not running and state != RunState.IDLE)
+
+    def update_live(
+        self,
+        elapsed_s: float,
+        torque_nm: float,
+        rpm: float,
+        dac_raw: int,
+        samples: int,
+    ) -> None:
+        self._time_val.setText(f"{elapsed_s:7.2f} s")
+        self._torque_val.setText(f"{torque_nm:7.3f} N·m")
+        self._rpm_val.setText(f"{rpm:7.1f}")
+        self._dac_val.setText(f"{dac_raw}")
+        self._samples_val.setText(f"{samples}")
+
+    def set_log_path(self, path: Path | None) -> None:
+        self._log_label.setText(str(path) if path else "—")

@@ -1,0 +1,91 @@
+"""
+Serial Port Configuration Dialog.
+
+Lets the user pick the COM/tty port and verify connectivity (PING).
+"""
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
+
+from modules.serial_comm import list_serial_ports
+
+
+class SerialConfigDialog(QDialog):
+    """
+    Modal dialog for selecting the Arduino serial port.
+
+    After exec(), check result() == QDialog.DialogCode.Accepted
+    and read .selected_port.
+    """
+
+    def __init__(self, current_port: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Serial Port Configuration")
+        self.setMinimumWidth(380)
+        self.selected_port: str = current_port
+
+        self._build_ui(current_port)
+
+    def _build_ui(self, current_port: str) -> None:
+        layout = QVBoxLayout(self)
+
+        # ---- Port selection ----
+        group = QGroupBox("Arduino Port")
+        g_layout = QVBoxLayout(group)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Port:"))
+
+        self._port_combo = QComboBox()
+        self._refresh_ports()
+        if current_port and current_port in [
+            self._port_combo.itemText(i) for i in range(self._port_combo.count())
+        ]:
+            idx = self._port_combo.findText(current_port)
+            self._port_combo.setCurrentIndex(idx)
+        row.addWidget(self._port_combo, stretch=1)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setFixedWidth(70)
+        refresh_btn.clicked.connect(self._refresh_ports)
+        row.addWidget(refresh_btn)
+        g_layout.addLayout(row)
+
+        self._status_label = QLabel("Select a port and click OK.")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        g_layout.addWidget(self._status_label)
+        layout.addWidget(group)
+
+        # ---- Buttons ----
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _refresh_ports(self) -> None:
+        ports = list_serial_ports()
+        self._port_combo.clear()
+        if ports:
+            self._port_combo.addItems(ports)
+        else:
+            self._port_combo.addItem("(no ports found)")
+
+    def _on_accept(self) -> None:
+        port = self._port_combo.currentText()
+        if not port or port.startswith("("):
+            self._status_label.setText("No valid port selected.")
+            return
+        self.selected_port = port
+        self.accept()

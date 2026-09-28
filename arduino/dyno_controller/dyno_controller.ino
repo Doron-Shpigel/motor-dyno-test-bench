@@ -1,0 +1,211 @@
+#include <Wire.h>
+#include <EEPROM.h>
+
+// --- Hardware Pins & Addresses ---
+#define MCP4725_ADDR      0x60   // I2C address of the DAC module
+#define TORQUE_PIN        A0     // Analog pin reading the FYTH Torque
+#define SPEED_PIN         A1     // Analog pin reading the FYTH Speed
+#define SERIAL_BAUD       115200 // Fast communication speed with PC
+
+// --- EEPROM (Memory) Setup ---
+// We store the PID gains at memory address 0 so they survive being unplugged
+const int EEPROM_ADDR = 0;
+struct PIDSettings {
+  float Kp; // Proportional: Reacts to current error
+  float Ki; // Integral: Reacts to accumulated past error
+  float Kd; // Derivative: Reacts to the rate of error change
+} pid;
+
+// --- System State Variables ---
+bool isRunning = false;     // Is the test currently active?
+float targetTorque = 0.0;   // What the PC requested
+float currentTorque = 0.0;  // What the sensor actually reads
+float currentSpeed = 0.0;   // What the speed sensor reads
+
+// --- PID Math Variables ---
+float errorIntegral = 0.0;  // Holds the accumulated error over time
+float prevError = 0.0;      // Holds the error from the previous loop for Derivative math
+int dacValue = 0;           // The final 0-4095 signal sent to the brake
+
+// --- Timing Variables ---
+unsigned long lastPidTime = 0;
+const unsigned long PID_INTERVAL = 20; // 20ms = 50 Hz control loop
+
+unsigned long lastTelemetryTime = 0;
+const unsigned long TELEMETRY_INTERVAL = 50; // 50ms = 20 Hz PC updates
+
+String serialBuffer = "";
+
+// =========================================================================
+// RAW I2C DAC FUNCTION
+// Bypasses heavy libraries to send raw 12-bit voltage signals super fast
+// =========================================================================
+void mcp4725_write(uint16_t value) {
+  // Ensure we don't send a number higher than the 12-bit max (4095)
+  value = constrain(value, 0, 4095); 
+  
+  Wire.beginTransmission(MCP4725_ADDR);
+  // Shift bits to format the data exactly how the MCP4725 chip expects it
+  Wire.write((value >> 8) & 0x0F);   // Send upper 4 bits
+  Wire.write(value & 0xFF);          // Send lower 8 bits
+  Wire.endTransmission();
+}
+
+// =========================================================================
+// INITIALIZATION (Runs once at startup)
+// =========================================================================
+void setup() {
+  Serial.begin(SERIAL_BAUD);
+  Wire.begin();
+
+  mcp4725_write(0); // Safety first: ensure brake is OFF on boot
+
+  // Read the saved PID values from the chip's internal memory
+  EEPROM.get(EEPROM_ADDR, pid);
+  
+  // If memory is blank (first time ever booting), set safe defaults
+  if (isnan(pid.Kp) || pid.Kp < 0 || pid.Kp > 1000) {
+    pid.Kp = 100.0; 
+    pid.Ki = 10.0; 
+    pid.Kd = 1.0;   
+    EEPROM.put(EEPROM_ADDR, pid);
+  }
+  Serial.println(F("DYNO_READY"));
+}
+
+// =========================================================================
+// MAIN LOOP (Runs continuously)
+// =========================================================================
+void loop() {
+  handleSerialCommands(); // 1. Check if PC sent us a message
+
+  unsigned long now = millis();
+
+  // ---------------------------------------------------------
+  // 2. HARDWARE PID CONTROL LOOP (Executes exactly every 20ms)
+  // ---------------------------------------------------------
+  if (now - lastPidTime >= PID_INTERVAL) {
+    float dt = (now - lastPidTime) / 1000.0; // Calculate time delta in seconds
+    lastPidTime = now;
+
+    // Read the physical analog pins
+    currentTorque = (float)analogRead(TORQUE_PIN); 
+    currentSpeed = (float)analogRead(SPEED_PIN);   
+
+    // Only calculate PID and apply brake if the test is running
+    if (isRunning) {
+      // Step A: Calculate how far off we are from the target
+      float error = targetTorque - currentTorque;
+      
+      // Step B: Proportional Math (Push harder if error is big)
+      float pTerm = pid.Kp * error;
+      
+      // Step C: Integral Math (Nudge gently if we are stuck slightly off target)
+      errorIntegral += error * dt;
+      // Prevent "Integral Windup" (getting stuck counting infinitely)
+      if (errorIntegral > 4000) errorIntegral = 4000;
+      if (errorIntegral < -4000) errorIntegral = -4000;
+      float iTerm = pid.Ki * errorIntegral;
+      
+      // Step D: Derivative Math (Pull back if we are approaching the target too fast)
+      float derivative = (error - prevError) / dt;
+      float dTerm = pid.Kd * derivative;
+      prevError = error;
+
+      // Step E: Combine P, I, and D to get the new DAC command
+      dacValue = (int)(pTerm + iTerm + dTerm);
+      
+      // Step F: Keep within physical limits (0 to 4095)
+      if (dacValue > 4095) dacValue = 4095;
+      if (dacValue < 0) dacValue = 0;
+
+      // Send the physical voltage command to the brake!
+      mcp4725_write(dacValue);
+    } else {
+      // If test is stopped, ensure brake is completely off
+      dacValue = 0;
+      mcp4725_write(0);
+    }
+  }
+
+  // ---------------------------------------------------------
+  // 3. PC TELEMETRY LOOP (Executes exactly every 50ms)
+  // ---------------------------------------------------------
+  if (now - lastTelemetryTime >= TELEMETRY_INTERVAL) {
+    lastTelemetryTime = now;
+    // Send formatted string to PC: <DATA:Torque,Speed,DAC_Value>
+    Serial.print("<DATA:");
+    Serial.print(currentTorque, 2); Serial.print(",");
+    Serial.print(currentSpeed, 2); Serial.print(",");
+    Serial.print(dacValue);
+    Serial.println(">");
+  }
+}
+
+// =========================================================================
+// SERIAL PARSER
+// Reads letters from the PC one by one until it hits a "Newline" (\n)
+// =========================================================================
+void handleSerialCommands() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n') {
+      processCommand(serialBuffer); // We got a full message, process it
+      serialBuffer = "";            // Clear buffer for the next message
+    } else if (c != '\r') {
+      serialBuffer += c;            // Add letter to our buffer
+    }
+  }
+}
+
+// Looks at the full message from PC and decides what to do
+void processCommand(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+
+  // Lifecycle commands (Starts and Stops the PID loop)
+  if (cmd == "START") {
+    isRunning = true;
+    Serial.println("ACK:START");
+  }
+  else if (cmd == "STOP" || cmd == "RESET") {
+    isRunning = false;
+    targetTorque = 0.0;
+    errorIntegral = 0.0;
+    mcp4725_write(0);
+    Serial.print("ACK:"); Serial.println(cmd);
+  }
+  else if (cmd == "PING") {
+    Serial.println("PONG");
+  }
+  // UI Commands: Send current memory values to the GUI
+  else if (cmd.startsWith("<GET_PID>")) {
+    Serial.print("<PID_VALS:");
+    Serial.print(pid.Kp, 4); Serial.print(",");
+    Serial.print(pid.Ki, 4); Serial.print(",");
+    Serial.print(pid.Kd, 4); Serial.println(">");
+  }
+  // UI Commands: Save new tuning values to memory
+  else if (cmd.startsWith("<SET_PID:")) {
+    int startIdx = cmd.indexOf(':') + 1;
+    int comma1 = cmd.indexOf(',', startIdx);
+    int comma2 = cmd.indexOf(',', comma1 + 1);
+    int endIdx = cmd.indexOf('>', comma2);
+
+    pid.Kp = cmd.substring(startIdx, comma1).toFloat();
+    pid.Ki = cmd.substring(comma1 + 1, comma2).toFloat();
+    pid.Kd = cmd.substring(comma2 + 1, endIdx).toFloat();
+
+    EEPROM.put(EEPROM_ADDR, pid); 
+    errorIntegral = 0; // Reset math history to prevent sudden jumps
+    Serial.println("ACK:SET_PID");
+  }
+  // PC Control Loop: Tell PID what the new goal is
+  else if (cmd.startsWith("<SET_TORQUE:")) {
+    int startIdx = cmd.indexOf(':') + 1;
+    int endIdx = cmd.indexOf('>', startIdx);
+    targetTorque = cmd.substring(startIdx, endIdx).toFloat();
+    Serial.print("ACK:SET_TORQUE:");
+    Serial.println(targetTorque);
+  }
+}
