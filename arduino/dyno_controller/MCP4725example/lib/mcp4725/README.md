@@ -1,4 +1,14 @@
-# MCP4725 light and simple library
+# MCP4725 Arduino Library
+
+A robust, redundant, and highly efficient Arduino library for the MCP4725 12-bit Digital-to-Analog Converter (DAC) with EEPROM.
+
+## Features
+- **State Caching**: The class instance caches device states to minimize redundant I2C communications and improve speed.
+- **Bitwise Operations**: Optimized bitwise operations are used for high-efficiency register masking and state tracking.
+- **Full Configuration**: Easy setup for addressing, normal mode, power-down modes (1kΩ, 100kΩ, 500kΩ), reference voltage, and EEPROM state.
+- **Bi-directional Updating**: Read the full configuration and EEPROM settings directly from the device and sync it back to the library instance, or update the device with new settings.
+
+## Architecture
 
 ```mermaid
 flowchart RL
@@ -11,11 +21,13 @@ flowchart RL
         
         subgraph Attributes ["Private Attributes (State)"]
             direction TB
-            a_addr[("_address")]:::attribute
-            a_ref[("_reference_voltage")]:::attribute
-            a_mode[("_mode")]:::attribute
-            a_eep[("_eeprom_voltage")]:::attribute
-            a_out[("_output_voltage")]:::attribute
+            a_state[("states.state_register")]:::attribute
+            a_addr[("states.address")]:::attribute
+            a_ref[("states.reference_voltage")]:::attribute
+            a_mode[("states.mode")]:::attribute
+            a_eep[("states.eeprom_voltage")]:::attribute
+            a_out[("states.output_voltage")]:::attribute
+            a_data[("data array")]:::attribute
         end
         subgraph Methods ["Public Methods (Actions)"]
             direction TB
@@ -25,9 +37,13 @@ flowchart RL
             m_mode(["mode(...)"]):::method
             m_eeprom(["eeprom(...)"]):::method
             m_out(["output(...)"]):::method
+            m_act(["activate()"]):::method
+            m_deact(["deactivate(...)"]):::method
+            m_updev(["update_to_device()"]):::method
+            m_upfrom(["update_from_device()"]):::method
+            m_read(["read_from_device(...)"]):::method
         end
 
-        
     end
 
     subgraph External ["Global Scope (Main / Libraries)"]
@@ -35,21 +51,27 @@ flowchart RL
         w_begin["Wire.beginTransmission()"]:::globalFunc
         w_write["Wire.write()"]:::globalFunc
         w_end["Wire.endTransmission()"]:::globalFunc
+        w_req["Wire.requestFrom()"]:::globalFunc
+        w_read["Wire.read()"]:::globalFunc
     end
 
     %% Method to Attribute interactions
-    m_setup -->|Sets| a_addr & a_ref & a_mode & a_eep
-    m_addr -->|Updates| a_addr
-    m_ref -->|Updates| a_ref
-    m_mode -->|Updates| a_mode
+    m_setup -->|Sets| a_addr & a_ref & a_mode & a_eep & a_out
+    m_addr -->|Updates| a_addr & a_state
+    m_ref -->|Updates| a_ref & a_state
+    m_mode -->|Updates| a_mode & a_state
     
-    m_out -->|Reads| a_addr & a_mode & a_ref
-    m_out -->|Updates| a_out
+    m_out -->|Updates| a_out & a_state
+    m_eeprom -->|Updates| a_eep & a_state
     
-    m_eeprom -->|Reads| a_addr & a_mode & a_ref
-    m_eeprom -->|Updates| a_eep
+    m_updev -->|Reads| a_addr & a_out & a_ref & a_mode
+    m_updev -->|Updates| a_data & a_state
+    
+    m_upfrom -->|Updates| a_mode & a_out & a_eep & a_state
 
     %% Method to Global function interactions
-    m_out -->|Uses| w_begin & w_write & w_end
-    m_eeprom -->|Uses| w_begin & w_write & w_end
+    m_updev -->|Uses| w_begin & w_write & w_end
+    m_deact -->|Uses| w_begin & w_write & w_end
+    m_addr -->|Uses| w_begin & w_end
+    m_read -->|Uses| w_req & w_read
 ```

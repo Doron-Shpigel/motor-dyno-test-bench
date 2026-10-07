@@ -49,24 +49,24 @@ uint8_t MCP4725::default_setup(){// *DONE*
     if (MCP4725::address(MCP4725::A0, MCP4725::A1, MCP4725::A2)){ // will return 0x01 if the address is invalid, or probing to the device fails
         return 0x01;
     };
-    states.state_register^= MCP4725::address_set_mask; // clear the address set bit in the state register, indicating that the address has been set successfully
+    states.state_register &= ~MCP4725::address_set_mask; // clear the address set bit in the state register, indicating that the address has been set successfully
     if (MCP4725::mode(MCP4725::power_down_modes::power_down_1k_mode))
     { // will return 0x02 if the mode is invalid or,  the device didn't enter power down 1k mode
         return 0x02;
     };
-    states.state_register^= MCP4725::mode_set_mask; // clear the mode set bit in the state register, indicating that the mode has been set successfully
+    states.state_register &= ~MCP4725::mode_set_mask; // clear the mode set bit in the state register, indicating that the mode has been set successfully
     if (MCP4725::reference_voltage(MCP4725::IdealReferenceVoltage)){// will return 0x03 if the reference voltage is out of range (0-5000 mV)
         return 0x03;
     };
-    states.state_register^= MCP4725::reference_voltage_set_mask; // clear the reference voltage set bit in the state register, indicating that the reference voltage has been set successfully
+    states.state_register &= ~MCP4725::reference_voltage_set_mask; // clear the reference voltage set bit in the state register, indicating that the reference voltage has been set successfully
     if (MCP4725::eeprom(0x0000)){ // will return 0x04 if the eeprom voltage is out of range (0-4095 mV), or if the eeprom write fails
         return 0x04;
     };
-    states.state_register^= MCP4725::eeprom_voltage_set_mask; // clear the eeprom voltage set bit in the state register, indicating that the eeprom voltage has been set successfully
+    states.state_register &= ~MCP4725::eeprom_voltage_set_mask; // clear the eeprom voltage set bit in the state register, indicating that the eeprom voltage has been set successfully
     if (MCP4725::output(0x0000)){ // will return 0x05 if the output voltage is out of range (0-4095 mV)
         return 0x05;
     };
-    states.state_register^= MCP4725::output_voltage_set_mask; // clear the output voltage set bit in the state register, indicating that the output voltage has been set successfully
+    states.state_register &= ~MCP4725::output_voltage_set_mask; // clear the output voltage set bit in the state register, indicating that the output voltage has been set successfully
     return 0x00;
 }; 
 // change instance address, also it will probe the device to check if the address is valid and the device is responding, returns 0x00 if successful, otherwise returns an error code.
@@ -85,7 +85,7 @@ uint8_t MCP4725::address(uint8_t address_a0=MCP4725::A0, uint8_t address_a1 = MC
         return 0x12; // invalid address bit A2
     }
     states.address  = device_code | (address_a2 << 2) | (address_a1 << 1) | address_a0; // combine the device code and the address bits to form the full 7-bit address
-    states.state_register^= MCP4725::address_set_mask; // clear the address set bit in the state register, indicating that the address has been set successfully
+    states.state_register &= ~MCP4725::address_set_mask; // clear the address set bit in the state register, indicating that the address has been set successfully
     return probe(); // probe the device to check if the address is valid and the device is responding
 }; // change instance address
 // will use the current instance address to probe the device, returns 0x00 if successful, otherwise returns an error code.
@@ -104,7 +104,7 @@ uint16_t MCP4725::reference_voltage(uint16_t reference_voltage=MCP4725::IdealRef
         return 0xFFFF; // invalid reference voltage, must be between 0 and 5000 mV
     }
     states.reference_voltage = reference_voltage;
-    states.state_register^= MCP4725::reference_voltage_set_mask; // clear the reference voltage set bit in the state register, indicating that the reference voltage has been set successfully
+    states.state_register &= ~MCP4725::reference_voltage_set_mask; // clear the reference voltage set bit in the state register, indicating that the reference voltage has been set successfully
     return 0x0000;
 };
 //change the eeprom and output voltage in the class instance, returns 0x00 if successful, otherwise returns an error code.
@@ -113,7 +113,7 @@ uint16_t MCP4725::eeprom(uint16_t voltage){// *DONE*
         return 0xFFFF; // invalid eeprom voltage, must be between 0 and 5000 mV
     }
     states.eeprom_voltage = voltage;
-    states.state_register^= MCP4725::eeprom_voltage_set_mask; // clear the eeprom set bit in the state register, indicating that the eeprom has been set successfully
+    states.state_register &= ~MCP4725::eeprom_voltage_set_mask; // clear the eeprom set bit in the state register, indicating that the eeprom has been set successfully
     return MCP4725::output(voltage);
 };// set the eeprom and output voltage
 // change the output voltage in the class instance, returns 0x00 if successful, otherwise returns an error code.
@@ -122,7 +122,7 @@ uint16_t MCP4725::output(uint16_t voltage){// *DONE*
         return 0xFFFF; // invalid output voltage, must be between 0 and 5000 mV
     }
     states.output_voltage = voltage;
-    states.state_register^= MCP4725::output_voltage_set_mask; // clear the output voltage set bit in the state register, indicating that the output voltage has been set successfully
+    states.state_register &= ~MCP4725::output_voltage_set_mask; // clear the output voltage set bit in the state register, indicating that the output voltage has been set successfully
     return 0x0000;
 };
 //
@@ -132,7 +132,7 @@ uint8_t MCP4725::mode(uint8_t mode = MCP4725::power_down_modes::power_down_1k_mo
         return 0xFF; // invalid mode, must be between 0 and 3, watch the header file for power_down_modes 
     }
     states.mode = mode;
-    states.state_register^= MCP4725::mode_set_mask; // clear the mode set bit in the state register, indicating that the mode has been set successfully
+    states.state_register &= ~MCP4725::mode_set_mask; // clear the mode set bit in the state register, indicating that the mode has been set successfully
     return 0x00;
 }
 
@@ -206,6 +206,109 @@ uint8_t MCP4725::activate(){
     };
     return deactivate(MCP4725::power_down_modes::normal_mode); // send the normal mode command to the device, and return the verification value.
 };
+
+void MCP4725::update_data_array() {
+    uint32_t output_voltage_32 = ((uint32_t)states.output_voltage * 4096) / states.reference_voltage;
+    if (output_voltage_32 > 4095) {
+        output_voltage_32 = 4095;
+    }
+    uint16_t dac_value = (uint16_t)output_voltage_32;
+    data[0] = (dac_value >> 4) & 0xFF; // Upper 8 bits (D11-D4)
+    data[1] = (dac_value << 4) & 0xF0; // Lower 4 bits (D3-D0)
+}
+
+uint8_t MCP4725::update_to_device() {
+    if (states.state_register & MCP4725::address_set_mask) {
+        return 0x01; // address has not been set
+    }
+    update_data_array();
+    
+    uint8_t command;
+    // If eeprom_voltage has been set, we write DAC and EEPROM, else just DAC
+    if ((states.state_register & MCP4725::eeprom_voltage_set_mask) == 0) {
+        command = MCP4725::write_dac_and_eeprom_command;
+    } else {
+        command = MCP4725::write_dac_only_command;
+    }
+    command |= (states.mode << 1);
+    
+    Wire.beginTransmission(states.address);
+    Wire.write(command);
+    Wire.write(data[0]);
+    Wire.write(data[1]);
+    uint8_t error = Wire.endTransmission();
+    if (error != 0) {
+        return 0x02; // transmission error
+    }
+    
+    if (states.mode == MCP4725::power_down_modes::normal_mode) {
+        states.state_register |= MCP4725::dac_active_mask;
+    } else {
+        states.state_register &= ~MCP4725::dac_active_mask;
+    }
+    
+    return 0x00;
+}
+
+void MCP4725::read_from_device(uint8_t *current_dac_settings, uint16_t *current_dac_register, uint16_t *current_eeprom_register) {
+    if (states.state_register & MCP4725::address_set_mask) {
+        return; // address has not been set
+    }
+    Wire.requestFrom((uint8_t)states.address, (uint8_t)5);
+    if (Wire.available() < 5) {
+        return; // failed to read required bytes
+    }
+    uint8_t byte1 = Wire.read();
+    uint8_t byte2 = Wire.read();
+    uint8_t byte3 = Wire.read();
+    uint8_t byte4 = Wire.read();
+    uint8_t byte5 = Wire.read();
+    
+    if (current_dac_settings != nullptr) {
+        *current_dac_settings = byte1;
+    }
+    if (current_dac_register != nullptr) {
+        *current_dac_register = ((uint16_t)byte2 << 4) | (byte3 >> 4);
+    }
+    if (current_eeprom_register != nullptr) {
+        *current_eeprom_register = ((uint16_t)byte4 << 8) | byte5;
+    }
+}
+
+uint8_t MCP4725::update_from_device() {
+    if (states.state_register & MCP4725::address_set_mask) {
+        return 0x01; // address has not been set
+    }
+    uint8_t current_dac_settings = 0;
+    uint16_t current_dac_register = 0;
+    uint16_t current_eeprom_register = 0;
+    
+    read_from_device(&current_dac_settings, &current_dac_register, &current_eeprom_register);
+    
+    // Update mode
+    states.mode = (current_dac_settings & 0b00000110) >> 1;
+    states.state_register &= ~MCP4725::mode_set_mask;
+    
+    // Calculate back the voltage if reference voltage is available
+    if ((states.state_register & MCP4725::reference_voltage_set_mask) == 0) {
+        uint32_t output_voltage_32 = ((uint32_t)current_dac_register * states.reference_voltage) / 4096;
+        states.output_voltage = (uint16_t)output_voltage_32;
+        states.state_register &= ~MCP4725::output_voltage_set_mask;
+        
+        uint16_t eeprom_val = (current_eeprom_register & 0x0FFF);
+        uint32_t eeprom_voltage_32 = ((uint32_t)eeprom_val * states.reference_voltage) / 4096;
+        states.eeprom_voltage = (uint16_t)eeprom_voltage_32;
+        states.state_register &= ~MCP4725::eeprom_voltage_set_mask;
+    }
+    
+    if (states.mode == MCP4725::power_down_modes::normal_mode) {
+        states.state_register |= MCP4725::dac_active_mask;
+    } else {
+        states.state_register &= ~MCP4725::dac_active_mask;
+    }
+    
+    return 0x00;
+}
 
 
 
