@@ -24,7 +24,7 @@ public:
 /* --configuration methods--
     return 0x00 if successful, otherwise return an error code
 */
-    uint8_t address(uint8_t address_a0, uint8_t address_a1 = A1, uint8_t address_a2 = A2, uint8_t device_code = device_code); // change instance address
+    uint8_t address(uint8_t address_a0, uint8_t address_a1 = A1, uint8_t address_a2 = A2, uint8_t device_code = 0x60); // change instance address
     uint16_t reference_voltage(uint16_t reference_voltage); // change the reference_voltage for the DAC calculation
     uint16_t eeprom(uint16_t voltage);// set the eeprom and output voltage
     uint16_t output(uint16_t voltage);  // set output voltage
@@ -43,7 +43,7 @@ public:
 
 private:
     struct InternalState {
-        uint8_t state_register = 0xFF;
+        uint8_t state_register = 0xDF; // 0xFF with bit 5 (dac_active_mask) cleared (0)
         /*
         this is 8bit register, each bit represents a different state of the class instance, the bits are as follows:
         bit 0(0b00000001): address set: 1 if the address has not been set, 0 if the address has been set
@@ -74,7 +74,7 @@ private:
     static constexpr uint8_t eeprom_voltage_set_mask = 0b00001000;
     static constexpr uint8_t output_voltage_set_mask = 0b00010000;
     static constexpr uint8_t dac_active_mask = 0b00100000; 
-    static constexpr uint8_t power_cycle_mask = 0b01000000;
+    static constexpr uint8_t eeprom_read_corrupted_mask = 0b01000000; // if 1, the device read buffer for EEPROM is corrupted by a DAC write
     static constexpr uint8_t verification_mask = 0b10000000;
     static constexpr uint8_t write_dac_only_command = 0b01000000; // command to write to the DAC register only
     static constexpr uint8_t write_dac_and_eeprom_command = 0b01100000; // command to write to the DAC register and the EEPROM register
