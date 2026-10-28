@@ -1,5 +1,8 @@
 #include <Wire.h>
 #include <EEPROM.h>
+#include <MCP4725_lib.h>
+
+MCP4725 dac;
 
 // --- Hardware Pins & Addresses ---
 #define MCP4725_ADDR      0x60   // I2C address of the DAC module
@@ -42,18 +45,14 @@ const unsigned long TELEMETRY_INTERVAL = 50; // 50ms = 20 Hz PC updates
 String serialBuffer = "";
 
 // =========================================================================
-// RAW I2C DAC FUNCTION
-// Bypasses heavy libraries to send raw 12-bit voltage signals super fast
+// MCP4725 DAC FUNCTION
+// Uses custom MCP4725 library to send 12-bit voltage signals to the brake
 // =========================================================================
 void mcp4725_write(uint16_t value) {
   // Ensure we don't send a number higher than the 12-bit max (4095)
   value = constrain(value, 0, 4095); 
-  
-  Wire.beginTransmission(MCP4725_ADDR);
-  // Shift bits to format the data exactly how the MCP4725 chip expects it
-  Wire.write((value >> 8) & 0x0F);   // Send upper 4 bits
-  Wire.write(value & 0xFF);          // Send lower 8 bits
-  Wire.endTransmission();
+  dac.output(value);
+  dac.update_to_device();
 }
 
 // =========================================================================
@@ -69,6 +68,16 @@ void setup() {
   digitalWrite(RELAY_BRAKE_PIN, LOW);
   digitalWrite(RELAY_SENSOR_PIN, LOW);
   digitalWrite(RELAY_AUX_PIN, LOW);
+
+  // Initialize MCP4725 DAC using custom library
+  uint8_t dac_err = dac.default_setup();
+  if (dac_err == 0) {
+    dac.reference_voltage(4096); // 1:1 mapping between 12-bit DAC codes (0-4095) and output
+    dac.activate();              // Switch from power-down 1k mode to normal operating mode
+  } else {
+    Serial.print(F("DAC_INIT_ERR:0x"));
+    Serial.println(dac_err, HEX);
+  }
 
   mcp4725_write(0); // Safety first: ensure brake is OFF on boot
 

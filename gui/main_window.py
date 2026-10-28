@@ -114,14 +114,16 @@ class MainWindow(QMainWindow):
         self._ctrl.sig_start_manual.connect(self._on_start_manual)
         self._ctrl.sig_stop_manual.connect(self._on_stop)
         self._ctrl.sig_manual_torque_changed.connect(self._on_manual_torque_changed)
+        self._ctrl.sig_manual_mode_changed.connect(self._on_manual_mode_changed)
+        self._ctrl.set_max_torque(self._calibration.max_torque_nm)
         
         self._ctrl.sig_choose_log_dir.connect(self._on_choose_log_dir)
         self._ctrl.sig_save_log.connect(self._on_save_log)
         
         # Hardware Relays
-        self._ctrl.sig_relay_brake.connect(lambda state: self._send_command(f"<RELAY:BRAKE,{1 if state else 0}>"))
-        self._ctrl.sig_relay_sensor.connect(lambda state: self._send_command(f"<RELAY:SENSOR,{1 if state else 0}>"))
-        self._ctrl.sig_relay_aux.connect(lambda state: self._send_command(f"<RELAY:AUX,{1 if state else 0}>"))
+        self._ctrl.sig_relay_brake.connect(lambda state: self._send_relay("BRAKE", state))
+        self._ctrl.sig_relay_sensor.connect(lambda state: self._send_relay("SENSOR", state))
+        self._ctrl.sig_relay_aux.connect(lambda state: self._send_relay("AUX", state))
         
         # Create Left-Side Tabs
         self._left_tabs = QTabWidget()
@@ -204,22 +206,70 @@ class MainWindow(QMainWindow):
     def _on_disconnect(self) -> None:
         self._stop_worker()
 
+    def _send_set_dac(self, dac_val: int | float) -> None:
+        if self._worker and self._connected:
+            self._worker.send_set_dac(dac_val)
+        else:
+            try:
+                val = int(round(float(dac_val)))
+            except (ValueError, TypeError, OverflowError):
+                val = 0
+            val = max(0, min(4095, val))
+            self._send_command(f"<SET_DAC:{val}>")
+
+    def _send_set_torque(self, torque_nm: float) -> None:
+        if self._worker and self._connected:
+            self._worker.send_set_torque(torque_nm)
+        else:
+            self._send_command(f"<SET_TORQUE:{float(torque_nm):.2f}>")
+
+    def _send_relay(self, name: str, state: bool | int) -> None:
+        if self._worker and self._connected:
+            self._worker.send_relay(name, state)
+        else:
+            self._send_command(f"<RELAY:{str(name).upper()},{1 if state else 0}>")
+
+    def _calculate_open_loop_dac(self, torque: float) -> int:
+        max_t = self._calibration.max_torque_nm if self._calibration.max_torque_nm > 0 else 5.0
+        dac = int(round((torque / max_t) * 4095))
+        return max(0, min(4095, dac))
+
     def _command_torque_setpoint(self, torque: float) -> None:
-        """Applies Hybrid Control Logic for a new torque setpoint."""
-        if self._last_rpm > 1.0:
-            self._send_command(f"<SET_TORQUE:{torque:.2f}>")
+        """Applies Control Logic (Open-Loop DAC, Closed-Loop PID, or Hybrid)."""
+        mode = "hybrid"
+        if self._session.run_mode == RunMode.MANUAL and hasattr(self._ctrl, "get_manual_control_mode"):
+            mode = self._ctrl.get_manual_control_mode()
+
+        if mode == "open_loop":
+            # Force open-loop DAC control
+            dac = self._calculate_open_loop_dac(torque)
+            self._send_set_dac(dac)
+            self._pid_active = False
+        elif mode == "closed_loop":
+            # Force closed-loop PID control
+            self._send_set_torque(torque)
             self._pid_active = True
         else:
-            # Pre-calculate open-loop DAC based on max torque (linear mapping)
-            dac = int((torque / self._calibration.max_torque_nm) * 4095)
-            dac = max(0, min(4095, dac))
-            self._send_command(f"<SET_DAC:{dac}>")
-            self._pid_active = False
+            # Hybrid: before RPM is registered (<= 1.0 RPM), command initial torque via open-loop SET_DAC.
+            # Once RPM is registered (> 1.0 RPM), transition to closed-loop SET_TORQUE PID control.
+            if self._last_rpm > 1.0:
+                self._send_set_torque(torque)
+                self._pid_active = True
+            else:
+                dac = self._calculate_open_loop_dac(torque)
+                self._send_set_dac(dac)
+                self._pid_active = False
+
+    @pyqtSlot(str)
+    def _on_manual_mode_changed(self, mode: str) -> None:
+        if self._session.state == RunState.RUNNING and self._session.run_mode == RunMode.MANUAL:
+            self._command_torque_setpoint(self._current_target_torque)
+            self._status(f"Manual control mode changed to {mode}.")
 
     @pyqtSlot(float)
     def _on_manual_torque_changed(self, torque: float) -> None:
+        self._current_target_torque = torque
         if self._session.state == RunState.RUNNING and self._session.run_mode == RunMode.MANUAL:
-            self._current_target_torque = torque
             self._stability_monitor.reset()
             self._settings_tab.set_stability_status(False)
             self._command_torque_setpoint(self._current_target_torque)
@@ -256,10 +306,11 @@ class MainWindow(QMainWindow):
         if self._session.state == RunState.RUNNING:
             return
             
-        self._on_reset()
+        target_torque = self._ctrl.get_manual_torque()
+        self._on_reset(preserve_manual_torque=True)
+        self._current_target_torque = target_torque
 
         self._start_run_common(RunMode.MANUAL)
-        self._current_target_torque = self._ctrl.get_manual_torque()
         
         if self._worker:
             self._command_torque_setpoint(self._current_target_torque)
@@ -309,7 +360,7 @@ class MainWindow(QMainWindow):
         self._update_ui_state()
 
     @pyqtSlot()
-    def _on_reset(self) -> None:
+    def _on_reset(self, preserve_manual_torque: bool = False) -> None:
         if self._session.state == RunState.RUNNING:
             self._on_stop()
             
@@ -318,17 +369,21 @@ class MainWindow(QMainWindow):
             
         self._session.reset()
         self._plots.clear()
-        self._ctrl.reset_manual_torque()
+        if not preserve_manual_torque:
+            self._ctrl.reset_manual_torque()
+            self._current_target_torque = 0.0
         self._ctrl.update_run_stats(0.0, 0)
         self._ctrl.set_log_path(None)
         self._current_step_idx = 0
-        self._current_target_torque = 0.0
+        if not preserve_manual_torque:
+            self._current_target_torque = 0.0
         self._last_torque_raw = 0.0
         self._last_torque_nm = 0.0
         self._last_speed = 0.0
         self._last_dac = 0
         self._last_adc = 0
         self._last_rpm = 0.0
+        self._pid_active = False
         self._stability_monitor.reset()
         self._settings_tab.set_stability_status(False)
         self._status("Reset.")
@@ -347,9 +402,18 @@ class MainWindow(QMainWindow):
         now = time.perf_counter()
 
         # Hybrid Logic check: if motor starts spinning, hand over to PID
-        if not self._pid_active and self._last_rpm > 1.0:
-            self._send_command(f"<SET_TORQUE:{self._current_target_torque:.2f}>")
-            self._pid_active = True
+        mode = "hybrid"
+        if self._session.run_mode == RunMode.MANUAL and hasattr(self._ctrl, "get_manual_control_mode"):
+            mode = self._ctrl.get_manual_control_mode()
+
+        if mode == "hybrid":
+            if not self._pid_active and self._last_rpm > 1.0:
+                self._send_set_torque(self._current_target_torque)
+                self._pid_active = True
+            elif self._pid_active and self._last_rpm <= 1.0:
+                dac = self._calculate_open_loop_dac(self._current_target_torque)
+                self._send_set_dac(dac)
+                self._pid_active = False
 
         # 1. Evaluate steady-state stability
         is_stable = self._stability_monitor.is_stable(self._current_target_torque)
@@ -514,6 +578,14 @@ class MainWindow(QMainWindow):
             self._status("PID gains acknowledged and saved to Arduino EEPROM.")
         elif cleaned.startswith("SET_TORQUE"):
             self._status(f"Arduino acknowledged target torque setpoint: {cleaned}")
+        elif cleaned.startswith("SET_DAC"):
+            self._status(f"Arduino acknowledged DAC output: {cleaned}")
+        elif cleaned.startswith("RELAY"):
+            self._status(f"Arduino acknowledged relay command: {cleaned}")
+        elif cleaned == "START":
+            self._status("Arduino acknowledged run START.")
+        elif cleaned in ("STOP", "RESET"):
+            self._status(f"Arduino acknowledged {cleaned}.")
         else:
             self._status(f"Arduino ACK: {ack_text}")
 
@@ -544,25 +616,29 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_update_calibration(self) -> None:
         self._timer.setInterval(self._calibration.poll_interval_ms)
+        self._ctrl.set_max_torque(self._calibration.max_torque_nm)
         self._status("App settings updated.")
         
     @pyqtSlot()
     def _on_start_calibration(self) -> None:
         self._is_calibrating = True
         self._max_calib_reading = 0.0
-        self._send_command("<RELAY:SENSOR,1>")
-        self._send_command("<SET_DAC:4095>")
+        self._send_command("START")
+        self._send_relay("SENSOR", True)
+        self._send_set_dac(4095)
         
     @pyqtSlot()
     def _on_finish_calibration(self) -> None:
         self._is_calibrating = False
-        self._send_command("<SET_DAC:0>")
-        self._send_command("<RELAY:SENSOR,0>")
+        self._send_set_dac(0)
+        self._send_relay("SENSOR", False)
+        self._send_command("STOP")
         
         # Calculate new mapping factor (max torque is exactly 5 N·m)
         if self._max_calib_reading > 512.0:
             self._calibration.torque_per_count = 5.0 / (self._max_calib_reading - 512.0)
             self._calibration.max_torque_nm = 5.0 # For open loop mapping reference
+            self._ctrl.set_max_torque(5.0)
             self._status(f"Calibration successful: Peak ADC {self._max_calib_reading:.0f} mapped to 5 N·m.")
         else:
             self._status("Calibration failed: insufficient force applied.")

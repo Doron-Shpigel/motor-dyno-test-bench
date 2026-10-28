@@ -15,6 +15,8 @@ public:
     uint8_t hw_mode = 0;
     uint8_t hw_eeprom_mode = 0;
     
+    bool fail_read = false;
+    
     void begin() {}
     void beginTransmission(uint8_t addr) { address = addr; buf_idx = 0; }
     void write(uint8_t data) { buffer[buf_idx++] = data; }
@@ -33,6 +35,11 @@ public:
         return 0; 
     }
     uint8_t requestFrom(uint8_t addr, uint8_t len) {
+        if (fail_read) {
+            buf_len = 0;
+            buf_idx = 0;
+            return 0;
+        }
         buf_len = len; buf_idx = 0;
         // Mock read response
         uint8_t rdy = 1;

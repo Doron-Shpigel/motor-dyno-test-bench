@@ -21,9 +21,11 @@ pong_received()                   – Arduino sent PONG
 
 Protocol (see dyno_controller.ino):
     PC  → Arduino : "START\n", "STOP\n", "RESET\n", "PING\n",
-                    "<GET_PID>\n", "<SET_PID:p,i,d>\n", "<SET_TORQUE:t>\n"
+                    "<GET_PID>\n", "<SET_PID:p,i,d>\n", "<SET_TORQUE:t>\n",
+                    "<SET_DAC:d>\n", "<RELAY:name,state>\n"
     Arduino → PC  : "<DATA:t,s,d>\n", "<PID_VALS:p,i,d>\n", "ACK:<cmd>\n",
-                    "DYNO_READY\n", "PONG\n", "ERR:<msg>\n", "SPEED:<int>\n"
+                    "DYNO_READY\n", "PONG\n", "ERR:<msg>\n", "SPEED:<int>\n",
+                    "DAC_INIT_ERR:<hex>\n"
 """
 
 import math
@@ -120,7 +122,30 @@ class SerialWorker(QThread):
 
     def send_set_torque(self, torque_nm: float) -> None:
         """Queue <SET_TORQUE:t> command to update target torque setpoint."""
-        self.send_command(f"<SET_TORQUE:{torque_nm:.2f}>")
+        try:
+            val = float(torque_nm)
+            if not math.isfinite(val):
+                val = 0.0
+        except (ValueError, TypeError, OverflowError):
+            val = 0.0
+        self.send_command(f"<SET_TORQUE:{val:.2f}>")
+
+    def send_set_dac(self, dac_val: int | float) -> None:
+        """Queue <SET_DAC:d> command to set raw 12-bit DAC output (open-loop, 0-4095)."""
+        try:
+            val = int(round(float(dac_val)))
+            if not math.isfinite(val):
+                val = 0
+        except (ValueError, TypeError, OverflowError):
+            val = 0
+        clamped = max(0, min(4095, val))
+        self.send_command(f"<SET_DAC:{clamped}>")
+
+    def send_relay(self, name: str, state: bool | int) -> None:
+        """Queue <RELAY:name,state> command to switch hardware relays (BRAKE, SENSOR, AUX)."""
+        val = 1 if state else 0
+        clean_name = str(name).strip().upper()
+        self.send_command(f"<RELAY:{clean_name},{val}>")
 
     def stop(self) -> None:
         """Request the thread to exit gracefully."""
@@ -286,9 +311,12 @@ class SerialWorker(QThread):
             elif line == "DYNO_READY":
                 self.ready.emit()
 
-            # 6. Firmware Errors: ERR:...
+            # 6. Firmware Errors: ERR:... or DAC_INIT_ERR:...
             elif line.startswith("ERR:"):
                 self.error_received.emit(line[4:].strip())
+
+            elif line.startswith("DAC_INIT_ERR:"):
+                self.error_received.emit(line)
 
             # 7. Legacy Speed Frame: SPEED:... (Backward Compatibility)
             elif line.startswith("SPEED:"):

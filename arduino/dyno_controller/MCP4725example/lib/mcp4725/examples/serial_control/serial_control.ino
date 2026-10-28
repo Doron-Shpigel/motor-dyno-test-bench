@@ -66,8 +66,8 @@ void loop() {
     }
     else if (input.equalsIgnoreCase("OFF")) {
       // output voltage off
-      dac.deactivate(MCP4725::power_down_modes::power_down_1k_mode);
-      
+      //dac.deactivate(MCP4725::power_down_modes::power_down_1k_mode);
+      dac.deactivate();
       Serial.println("Command: OFF applied.");
       print_dac_status();
     }

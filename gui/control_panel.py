@@ -15,6 +15,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -60,6 +61,7 @@ class ControlPanel(QWidget):
     sig_start_manual = pyqtSignal()
     sig_stop_manual  = pyqtSignal()
     sig_manual_torque_changed = pyqtSignal(float)
+    sig_manual_mode_changed = pyqtSignal(str)
     
     sig_choose_log_dir = pyqtSignal()
     sig_save_log       = pyqtSignal()
@@ -72,6 +74,7 @@ class ControlPanel(QWidget):
         super().__init__(parent)
         self.setFixedWidth(280)
         self._manual_torque = 0.0
+        self._max_torque_nm = 5.0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -109,6 +112,18 @@ class ControlPanel(QWidget):
         man_group = QGroupBox("Manual Control")
         mg_layout = QVBoxLayout(man_group)
         
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Mode:")
+        mode_lbl.setStyleSheet("font-size: 11px;")
+        self._man_mode_combo = QComboBox()
+        self._man_mode_combo.addItem("Open Loop (DAC)", "open_loop")
+        self._man_mode_combo.addItem("Hybrid (Auto PID)", "hybrid")
+        self._man_mode_combo.addItem("Closed Loop (PID)", "closed_loop")
+        self._man_mode_combo.currentIndexChanged.connect(self._on_manual_mode_changed)
+        mode_row.addWidget(mode_lbl)
+        mode_row.addWidget(self._man_mode_combo, stretch=1)
+        mg_layout.addLayout(mode_row)
+
         man_ctrl_row = QHBoxLayout()
         self._man_minus_btn = QPushButton("➖")
         self._man_minus_btn.setFixedWidth(40)
@@ -129,6 +144,11 @@ class ControlPanel(QWidget):
         man_ctrl_row.addWidget(self._man_torque_val, stretch=1)
         man_ctrl_row.addWidget(self._man_plus_btn)
         mg_layout.addLayout(man_ctrl_row)
+
+        self._man_dac_val = QLabel("DAC: 0 / 4095")
+        self._man_dac_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._man_dac_val.setStyleSheet("font-size: 11px; color: #89b4fa;")
+        mg_layout.addWidget(self._man_dac_val)
         
         man_btn_row = QHBoxLayout()
         self._man_start_btn = QPushButton("▶  Start")
@@ -249,17 +269,43 @@ class ControlPanel(QWidget):
     # ------------------------------------------------------------------
     # Update helpers (called from MainWindow)
     # ------------------------------------------------------------------
+
+    @pyqtSlot(int)
+    def _on_manual_mode_changed(self, index: int) -> None:
+        mode = self.get_manual_control_mode()
+        self.sig_manual_mode_changed.emit(mode)
+
+    def get_manual_control_mode(self) -> str:
+        return self._man_mode_combo.currentData() or "open_loop"
+
+    def set_manual_control_mode(self, mode: str) -> None:
+        idx = self._man_mode_combo.findData(mode)
+        if idx >= 0:
+            self._man_mode_combo.setCurrentIndex(idx)
+
+    def set_max_torque(self, max_torque: float) -> None:
+        self._max_torque_nm = max(0.1, float(max_torque))
+        self._update_manual_display()
+
+    def get_manual_dac(self) -> int:
+        dac = int(round((self._manual_torque / self._max_torque_nm) * 4095))
+        return max(0, min(4095, dac))
+
+    def _update_manual_display(self) -> None:
+        self._man_torque_val.setText(f"{self._manual_torque:.1f} N·m")
+        dac = self.get_manual_dac()
+        self._man_dac_val.setText(f"DAC: {dac} / 4095")
     
     @pyqtSlot()
     def _on_manual_minus(self) -> None:
         self._manual_torque = max(0.0, self._manual_torque - 0.1)
-        self._man_torque_val.setText(f"{self._manual_torque:.1f} N·m")
+        self._update_manual_display()
         self.sig_manual_torque_changed.emit(self._manual_torque)
 
     @pyqtSlot()
     def _on_manual_plus(self) -> None:
         self._manual_torque += 0.1
-        self._man_torque_val.setText(f"{self._manual_torque:.1f} N·m")
+        self._update_manual_display()
         self.sig_manual_torque_changed.emit(self._manual_torque)
         
     def get_manual_torque(self) -> float:
@@ -267,7 +313,7 @@ class ControlPanel(QWidget):
         
     def reset_manual_torque(self) -> None:
         self._manual_torque = 0.0
-        self._man_torque_val.setText("0.0 N·m")
+        self._update_manual_display()
 
     def set_profile_info(self, plf: PiecewiseLinearFunction | None) -> None:
         if plf and plf.is_loaded():
@@ -311,6 +357,7 @@ class ControlPanel(QWidget):
             self._man_stop_btn.setEnabled(False)
             self._man_plus_btn.setEnabled(False)
             self._man_minus_btn.setEnabled(False)
+            self._man_mode_combo.setEnabled(False)
             self._load_btn.setEnabled(False)
             
         elif mode == RunMode.MANUAL and not idle:
@@ -323,6 +370,7 @@ class ControlPanel(QWidget):
             self._man_stop_btn.setEnabled(running)
             self._man_plus_btn.setEnabled(True)
             self._man_minus_btn.setEnabled(True)
+            self._man_mode_combo.setEnabled(False)
             
         else: # NONE / IDLE
             # Neither is running. Enable controls based on connection / loaded state
@@ -334,6 +382,7 @@ class ControlPanel(QWidget):
             self._man_stop_btn.setEnabled(False)
             self._man_plus_btn.setEnabled(True)
             self._man_minus_btn.setEnabled(True)
+            self._man_mode_combo.setEnabled(True)
             
         # Log buttons
         self._choose_log_dir_btn.setEnabled(not running)
