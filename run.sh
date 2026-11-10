@@ -1,44 +1,61 @@
 #!/usr/bin/env bash
-# Dyno Control Software — Linux / macOS launcher
-# Usage:  chmod +x run.sh && ./run.sh
+# =============================================================================
+# Dyno Control Software — Linux / macOS GUI Launcher
+# Usage: ./run.sh [--debug]
+# =============================================================================
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if ! command -v conda &> /dev/null; then
-    echo "ERROR: Conda is not installed or not in PATH."
-    echo "Please download and install Miniconda or Anaconda:"
-    echo "https://docs.conda.io/en/latest/miniconda.html"
-    exit 1
-fi
-
-if [ ! -d ".env" ]; then
-    echo "ERROR: Conda environment '.env' not found in the project directory."
-    echo "Please run: conda env create --prefix .env -f environment.yml"
-    exit 1
-fi
-
-# Linux: serial port access requires the user to be in the 'dialout' group.
-# If not already a member, add and remind the user to re-login.
+# Serial port access reminder for Linux dialout group
 if [[ "$(uname)" == "Linux" ]]; then
-    if ! groups "$USER" | grep -qw dialout; then
-        echo ""
-        echo "NOTE: Adding '$USER' to 'dialout' group for serial port access."
-        echo "      You will need to LOG OUT and LOG IN again for this to take effect."
-        sudo usermod -aG dialout "$USER" 2>/dev/null || true
+    CURRENT_USER="${USER:-$(whoami)}"
+    if ! (id -nG "$CURRENT_USER" 2>/dev/null || groups "$CURRENT_USER" 2>/dev/null) | grep -qw dialout; then
+        echo "NOTE: User '$CURRENT_USER' is not in the 'dialout' group."
+        echo "      Hardware serial ports may require dialout permissions."
+        echo "      Run: sudo usermod -aG dialout $CURRENT_USER"
     fi
 fi
 
-echo "Activating Conda environment and starting Dyno Control Software…"
-CONDA_BASE=$(conda info --base)
-source "$CONDA_BASE/etc/profile.d/conda.sh"
-conda activate ./.env
+# Locate Python in order of precedence:
+# 1. Local .venv
+# 2. Local .env virtualenv / conda prefix
+# 3. Conda environment if available
+# 4. System python3
+PYTHON_BIN=""
+
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+elif [ -x "$SCRIPT_DIR/.env/bin/python" ]; then
+    PYTHON_BIN="$SCRIPT_DIR/.env/bin/python"
+elif command -v conda &> /dev/null && [ -d "$SCRIPT_DIR/.env" ]; then
+    CONDA_BASE=$(conda info --base 2>/dev/null || true)
+    if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate "$SCRIPT_DIR/.env" 2>/dev/null || true
+        PYTHON_BIN="python"
+    fi
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    if command -v python3 &>/dev/null; then
+        PYTHON_BIN="python3"
+    elif command -v python &>/dev/null; then
+        PYTHON_BIN="python"
+    fi
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "ERROR: No suitable Python environment found."
+    echo "Please run ./install.sh to create a virtual environment and install dependencies."
+    exit 1
+fi
 
 if [[ "${1:-}" == "--debug" ]]; then
-    echo "Running in debug mode. Terminal will stay open."
-    python main.py --debug
+    echo "Running Dyno Control in foreground (debug mode)..."
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/main.py" "$@"
 else
-    echo "Running in background. Terminal will close."
-    nohup python main.py >/dev/null 2>&1 &
+    echo "Running Dyno Control in background. Terminal will close."
+    nohup "$PYTHON_BIN" "$SCRIPT_DIR/main.py" "$@" >/dev/null 2>&1 &
 fi

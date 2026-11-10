@@ -31,13 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 
-class CalibrationSettings:
-    """Plain-data container — pass around instead of individual floats."""
-    def __init__(self) -> None:
-        self.max_torque_nm: float   = 5.0    # N·m → DAC full scale (updated by calibration)
-        self.rpm_per_count: float   = 0.5    # RPM = adc_raw * rpm_per_count
-        self.poll_interval_ms: int  = 100    # control-loop tick (ms)
-        self.output_dir: str        = str(Path.home())
+from modules.calibration import CalibrationSettings
 
 
 # ---------------------------------------------------------------------------

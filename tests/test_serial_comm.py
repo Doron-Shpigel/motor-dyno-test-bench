@@ -3,7 +3,10 @@ Unit and integration tests for SerialWorker and MainWindow open-loop / SET_DAC c
 """
 
 import math
+from pathlib import Path
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -170,7 +173,11 @@ class TestMainWindowOpenLoopAndHybrid(unittest.TestCase):
     """Test MainWindow open-loop and hybrid control behavior with SET_DAC."""
 
     def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="dyno_serial_test_")
         self.window = MainWindow()
+        self.window._logger.open_temp = lambda: self.window._logger.open_explicit(
+            Path(self.temp_dir) / "temp_run.csv"
+        )
         self.mock_worker = MockSerialWorker(parent=self.window)
         self.window._worker = self.mock_worker
         self.window._connected = True
@@ -179,6 +186,7 @@ class TestMainWindowOpenLoopAndHybrid(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         app.processEvents()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_open_loop_manual_mode_always_sends_set_dac(self):
         """In Open-Loop mode, manual setpoint changes send SET_DAC regardless of RPM."""

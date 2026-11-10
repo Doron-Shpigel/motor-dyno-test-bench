@@ -1,39 +1,43 @@
 @echo off
-echo === Script started ===
-:: Dyno Control Software — Windows launcher
-:: Double-click this file to install dependencies (first time) and launch.
+setlocal
 
+:: =============================================================================
+:: Dyno Control Software — Windows GUI Launcher
+:: =============================================================================
 cd /d "%~dp0"
-echo Working directory: %cd%
 
-echo.
+echo Starting Dyno Control Software...
 
-:: Check Python is available
-python --version
-if errorlevel 1 (
-    echo ERROR: Python not found. Install Python 3.11+ from https://python.org
-    pause
-    exit /b 1
+if exist "%~dp0.venv\Scripts\python.exe" (
+    "%~dp0.venv\Scripts\python.exe" main.py %*
+    goto :check_error
 )
-echo Passed Python check
-pause
 
-echo.
-:: Install / upgrade requirements silently on first run
-echo === Installing requirements ===
-python -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo ERROR: Failed to install requirements. Check your internet connection.
-    pause
-    exit /b 1
+if exist "%~dp0.env\Scripts\python.exe" (
+    "%~dp0.env\Scripts\python.exe" main.py %*
+    goto :check_error
 )
-echo Requirements installed
-pause
 
-echo.
-echo === Launching main.py ===
-:: Launch
-echo Launching main.py
-python main.py
-echo main.py exited with code %errorlevel%
+where python >nul 2>&1
+if %errorlevel% equ 0 (
+    python main.py %*
+    goto :check_error
+)
+
+where py >nul 2>&1
+if %errorlevel% equ 0 (
+    py -3 main.py %*
+    goto :check_error
+)
+
+echo [ERROR] Python environment not found!
+echo Please run install.bat first to set up the environment.
 pause
+exit /b 1
+
+:check_error
+if %errorlevel% neq 0 (
+    echo.
+    echo Application exited with code %errorlevel%.
+    pause
+)
