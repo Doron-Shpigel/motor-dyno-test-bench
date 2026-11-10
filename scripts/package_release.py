@@ -169,6 +169,8 @@ def collect_release_files(root: Path) -> list[Path]:
 
             for f in files:
                 abs_f = current_path / f
+                if not abs_f.is_file():
+                    continue
                 rel_f = abs_f.relative_to(root)
                 if not should_exclude(rel_f):
                     collected.append(rel_f)
@@ -197,6 +199,19 @@ def create_tar_gz(
         for rel in rel_files:
             abs_path = source_root / rel
             arcname = f"{archive_prefix}/{rel.as_posix()}"
+
+            if abs_path.is_symlink():
+                tarinfo = tarfile.TarInfo(name=arcname)
+                tarinfo.type = tarfile.SYMTYPE
+                tarinfo.linkname = os.readlink(abs_path)
+                tarinfo.uid = 1000
+                tarinfo.gid = 1000
+                tarinfo.uname = "dyno"
+                tarinfo.gname = "dyno"
+                tarinfo.mode = 0o777
+                tar.addfile(tarinfo)
+                continue
+
             tarinfo = tar.gettarinfo(str(abs_path), arcname=arcname)
             tarinfo.uid = 1000
             tarinfo.gid = 1000
@@ -224,7 +239,12 @@ def create_zip(
         for rel in rel_files:
             abs_path = source_root / rel
             arcname = f"{archive_prefix}/{rel.as_posix()}"
-            zinfo = zipfile.ZipInfo.from_file(abs_path, arcname=arcname)
+            target_to_read = abs_path.resolve() if abs_path.is_symlink() else abs_path
+
+            if not target_to_read.is_file():
+                continue
+
+            zinfo = zipfile.ZipInfo.from_file(target_to_read, arcname=arcname)
 
             # Preserve unix file permissions
             if is_executable(rel):
@@ -233,7 +253,7 @@ def create_zip(
             else:
                 zinfo.external_attr = (stat.S_IFREG | 0o644) << 16
 
-            with open(abs_path, "rb") as f:
+            with open(target_to_read, "rb") as f:
                 zf.writestr(zinfo, f.read())
 
 
