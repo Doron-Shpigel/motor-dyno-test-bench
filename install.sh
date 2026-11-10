@@ -140,22 +140,42 @@ if [[ "$(uname)" == "Linux" ]]; then
     fi
 fi
 
-# 7. Verification check
-echo -e "${BLUE}Running verification test...${NC}"
-
-# Auto-load bundled X11 libraries (libxcb-cursor0) so GUI verifies with zero sudo
+# 6b. Ensure Linux GUI dependencies (libxcb-cursor0) are present in user space
 if [[ "$(uname)" == "Linux" ]]; then
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64|amd64)  LIB_ARCH_DIR="$SCRIPT_DIR/libs/x86_64" ;;
-        aarch64|arm64) LIB_ARCH_DIR="$SCRIPT_DIR/libs/aarch64" ;;
-        *)             LIB_ARCH_DIR="" ;;
+        x86_64|amd64)
+            LIB_DIR="$SCRIPT_DIR/libs/x86_64"
+            LIB_URL="https://raw.githubusercontent.com/Doron-Shpigel/motor-dyno-test-bench/main/libs/x86_64/libxcb-cursor.so.0.0.0"
+            ;;
+        aarch64|arm64)
+            LIB_DIR="$SCRIPT_DIR/libs/aarch64"
+            LIB_URL="https://raw.githubusercontent.com/Doron-Shpigel/motor-dyno-test-bench/main/libs/aarch64/libxcb-cursor.so.0.0.0"
+            ;;
+        *)
+            LIB_DIR=""
+            LIB_URL=""
+            ;;
     esac
-    if [ -n "$LIB_ARCH_DIR" ] && [ -d "$LIB_ARCH_DIR" ]; then
-        export LD_LIBRARY_PATH="$LIB_ARCH_DIR:${LD_LIBRARY_PATH:-}"
-        echo -e "${GREEN}✓ Bundled zero-sudo Linux libraries active:${NC} $LIB_ARCH_DIR"
+
+    if [ -n "$LIB_DIR" ]; then
+        mkdir -p "$LIB_DIR"
+        if [ ! -f "$LIB_DIR/libxcb-cursor.so.0" ] && [ ! -f "$LIB_DIR/libxcb-cursor.so.0.0.0" ]; then
+            echo -e "${BLUE}Downloading standalone X11 GUI library (libxcb-cursor0, zero sudo)...${NC}"
+            download_file "$LIB_URL" "$LIB_DIR/libxcb-cursor.so.0.0.0" || true
+            if [ -f "$LIB_DIR/libxcb-cursor.so.0.0.0" ]; then
+                ln -sf libxcb-cursor.so.0.0.0 "$LIB_DIR/libxcb-cursor.so.0"
+            fi
+        elif [ -f "$LIB_DIR/libxcb-cursor.so.0.0.0" ] && [ ! -f "$LIB_DIR/libxcb-cursor.so.0" ]; then
+            ln -sf libxcb-cursor.so.0.0.0 "$LIB_DIR/libxcb-cursor.so.0"
+        fi
+        export LD_LIBRARY_PATH="$LIB_DIR:${LD_LIBRARY_PATH:-}"
+        echo -e "${GREEN}✓ Zero-sudo Linux GUI library active:${NC} $LIB_DIR"
     fi
 fi
+
+# 7. Verification check
+echo -e "${BLUE}Running verification test...${NC}"
 
 if "$VENV_PY" -c "import serial, numpy; from modules.engine import DynoEngine; print('OK')" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Core engine & serial drivers verified successfully!${NC}"
