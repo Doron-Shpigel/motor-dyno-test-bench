@@ -35,51 +35,94 @@ fi
 
 if [ -z "$PYTHON_BIN" ]; then
     echo -e "${RED}[ERROR] Python 3 was not found on your system.${NC}"
-    echo "Please install Python 3.10+ using your package manager:"
-    echo "  Debian/Ubuntu: sudo apt install python3 python3-pip python3-venv"
-    echo "  Fedora/RHEL:   sudo dnf install python3 python3-pip"
-    echo "  Arch Linux:    sudo pacman -S python python-pip"
-    echo "  macOS:         brew install python3"
+    echo "Please ensure Python 3 is installed."
     exit 1
 fi
 
 PY_VERSION=$("$PYTHON_BIN" --version 2>&1)
 echo -e "${GREEN}✓ Found host Python:${NC} $PY_VERSION ($PYTHON_BIN)"
 
-# 2. Check for venv module
-if ! "$PYTHON_BIN" -m venv --help &>/dev/null; then
-    echo -e "${RED}[ERROR] The Python 'venv' module is missing.${NC}"
-    echo "On Debian/Ubuntu systems, install it with:"
-    echo -e "  ${YELLOW}sudo apt update && sudo apt install python3-venv${NC}"
-    echo "Alternatively, you can use Conda or virtualenv."
-    exit 1
+# Helper: download a URL to a target file using Python's built-in urllib (zero curl/wget dependency)
+download_file() {
+    local url="$1"
+    local dest="$2"
+    "$PYTHON_BIN" -c "
+import urllib.request, sys
+try:
+    urllib.request.urlretrieve(sys.argv[1], sys.argv[2])
+    sys.exit(0)
+except Exception as e:
+    sys.stderr.write(str(e) + '\n')
+    sys.exit(1)
+" "$url" "$dest" 2>/dev/null || \
+    curl -sSL "$url" -o "$dest" 2>/dev/null || \
+    wget -qO "$dest" "$url" 2>/dev/null
+}
+
+# 2. Virtual environment setup
+VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_PY="$VENV_DIR/bin/python"
+
+# If an incomplete or corrupt .venv exists without a python binary, wipe it
+if [ -d "$VENV_DIR" ] && [ ! -f "$VENV_PY" ]; then
+    echo -e "${YELLOW}Detected broken .venv directory. Rebuilding...${NC}"
+    rm -rf "$VENV_DIR"
 fi
 
-# 3. Create or reuse virtual environment
-VENV_DIR="$SCRIPT_DIR/.venv"
 if [ ! -d "$VENV_DIR" ]; then
-    echo -e "${BLUE}Creating virtual environment in:${NC} $VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    echo -e "${BLUE}Creating isolated virtual environment in:${NC} $VENV_DIR"
+    # Try 1: Standard venv
+    if ! "$PYTHON_BIN" -m venv "$VENV_DIR" 2>/dev/null; then
+        # Try 2: venv --without-pip (works on Debian/Ubuntu even when python3-venv is missing!)
+        echo -e "${YELLOW}Notice: Standard venv creation failed (Debian/Ubuntu ensurepip stripped).${NC}"
+        echo -e "${BLUE}Creating venv using --without-pip (zero sudo)...${NC}"
+        if ! "$PYTHON_BIN" -m venv --without-pip "$VENV_DIR" 2>/dev/null; then
+            # Try 3: PyPA standalone virtualenv.pyz zipapp
+            echo -e "${YELLOW}Notice: Standard venv module not present. Downloading standalone virtualenv...${NC}"
+            VENV_PYZ="/tmp/virtualenv_$$.pyz"
+            download_file "https://bootstrap.pypa.io/virtualenv.pyz" "$VENV_PYZ"
+            if [ -f "$VENV_PYZ" ]; then
+                "$PYTHON_BIN" "$VENV_PYZ" "$VENV_DIR" --quiet
+                rm -f "$VENV_PYZ"
+            else
+                echo -e "${RED}[ERROR] Failed to create virtual environment.${NC}"
+                exit 1
+            fi
+        fi
+    fi
 else
     echo -e "${BLUE}Using existing virtual environment in:${NC} $VENV_DIR"
 fi
-
-VENV_PY="$VENV_DIR/bin/python"
-VENV_PIP="$VENV_DIR/bin/pip"
 
 if [ ! -f "$VENV_PY" ]; then
     echo -e "${RED}[ERROR] Virtual environment python binary not found at $VENV_PY${NC}"
     exit 1
 fi
 
+# 3. Ensure pip exists inside .venv (auto-bootstrap if missing)
+if ! "$VENV_PY" -m pip --version &>/dev/null; then
+    echo -e "${YELLOW}Notice: 'pip' is not present in .venv.${NC}"
+    echo -e "${BLUE}Automatically bootstrapping standalone 'pip' into .venv (no sudo required)...${NC}"
+    GET_PIP="/tmp/get_pip_$$.py"
+    download_file "https://bootstrap.pypa.io/get-pip.py" "$GET_PIP"
+    if [ -f "$GET_PIP" ]; then
+        "$VENV_PY" "$GET_PIP" --quiet --no-warn-script-location
+        rm -f "$GET_PIP"
+        echo -e "${GREEN}✓ Successfully bootstrapped pip into .venv!${NC}"
+    else
+        echo -e "${RED}[ERROR] Could not download get-pip.py. Please check your internet connection.${NC}"
+        exit 1
+    fi
+fi
+
 # 4. Upgrade pip, wheel, setuptools inside venv
-echo -e "${BLUE}Upgrading pip, setuptools, and wheel in .venv...${NC}"
-"$VENV_PY" -m pip install --upgrade pip wheel setuptools --quiet
+echo -e "${BLUE}Updating pip, setuptools, and wheel in .venv...${NC}"
+"$VENV_PY" -m pip install --upgrade pip wheel setuptools --quiet --no-warn-script-location
 
 # 5. Install requirements.txt
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-    echo -e "${BLUE}Installing dependencies from requirements.txt...${NC}"
-    "$VENV_PY" -m pip install -r "$SCRIPT_DIR/requirements.txt"
+    echo -e "${BLUE}Installing required dependencies (PyQt6, pyqtgraph, pyserial, numpy, pytest)...${NC}"
+    "$VENV_PY" -m pip install -r "$SCRIPT_DIR/requirements.txt" --no-warn-script-location
 else
     echo -e "${RED}[ERROR] requirements.txt not found in $SCRIPT_DIR${NC}"
     exit 1
@@ -98,11 +141,19 @@ if [[ "$(uname)" == "Linux" ]]; then
 fi
 
 # 7. Verification check
-echo -e "${BLUE}Running headless verification test...${NC}"
-if QT_QPA_PLATFORM=offscreen "$VENV_PY" -c "import PyQt6, serial, pyqtgraph, numpy; from modules.engine import DynoEngine; print('OK')" >/dev/null 2>&1; then
-    echo -e "${GREEN}✓ Verification passed: Core modules & GUI backend load cleanly.${NC}"
+echo -e "${BLUE}Running verification test...${NC}"
+if "$VENV_PY" -c "import serial, numpy; from modules.engine import DynoEngine; print('OK')" >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Core engine & serial drivers verified successfully!${NC}"
 else
-    echo -e "${YELLOW}[WARNING] Headless import check failed. Please verify GUI libraries (libegl/libgl) if on Linux.${NC}"
+    echo -e "${RED}[ERROR] Core engine verification failed.${NC}"
+    exit 1
+fi
+
+# GUI verification (informative only)
+if QT_QPA_PLATFORM=offscreen "$VENV_PY" -c "import PyQt6, pyqtgraph; print('OK')" >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Desktop GUI backend (PyQt6 & pyqtgraph) verified successfully!${NC}"
+else
+    echo -e "${YELLOW}ℹ Note: GUI libraries (libEGL/libGL) not found on host. Terminal UI (TUI) and Headless API will run 100% fine.${NC}"
 fi
 
 # 8. Success banner
