@@ -1,6 +1,10 @@
 #include <Wire.h>
 #include <EEPROM.h>
-#include <MCP4725_lib.h>
+#if __has_include("MCP4725_lib.h")
+  #include "MCP4725_lib.h"
+#else
+  #include <MCP4725_lib.h>
+#endif
 
 MCP4725 dac;
 
