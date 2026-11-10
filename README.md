@@ -202,18 +202,47 @@ Every sample inside the window $[t_{\text{latest}} - t_{\text{settling}}, t_{\te
 
 ## Installation & Setup
 
-### Linux / macOS (Standalone — No Sudo Required)
+### Option 1: Standalone Release Archive (Recommended — No Git Required)
 
-Open your terminal and run:
+You do **not** need Git installed to run the dynamometer software. You can simply download the pre-packaged standalone release:
+
+#### Linux / macOS
+1. Download the latest release tarball from [GitHub Releases](https://github.com/Doron-Shpigel/motor-dyno-test-bench/releases) (or via terminal):
+   ```bash
+   # Download release archive directly
+   curl -L -O https://github.com/Doron-Shpigel/motor-dyno-test-bench/releases/download/v2.0.0/motor-dyno-test-bench-v2.0.0-linux.tar.gz
+
+   # Extract archive
+   tar -xzf motor-dyno-test-bench-v2.0.0-linux.tar.gz
+   cd motor-dyno-test-bench-v2.0.0
+
+   # Run standalone installer (sets up isolated .venv without sudo)
+   ./install.sh
+   ```
+
+#### Windows
+1. Download **`motor-dyno-test-bench-v2.0.0-windows.zip`** from [GitHub Releases](https://github.com/Doron-Shpigel/motor-dyno-test-bench/releases).
+2. Right-click the `.zip` file and select **Extract All...**.
+3. Open the extracted folder and double-click **`install.bat`** (or run `install.bat` in Command Prompt / PowerShell).
+4. The installer automatically detects Python 3.11+, sets up `.venv`, and verifies all dependencies.
+
+---
+
+### Option 2: Clone with Git (For Developers)
+
+If you have `git` installed and want to contribute to the code:
 
 ```bash
-# 1. Clone repository
+# Clone the repository (note the exact username: Doron-Shpigel)
 git clone https://github.com/Doron-Shpigel/motor-dyno-test-bench.git
 cd motor-dyno-test-bench
 
-# 2. Run standalone installer (sets up isolated .venv without sudo)
+# Linux / macOS:
 chmod +x install.sh
 ./install.sh
+
+# Windows:
+install.bat
 ```
 
 > **Serial Port Access on Linux**:
@@ -222,16 +251,6 @@ chmod +x install.sh
 > sudo usermod -aG dialout $USER
 > ```
 > *(Log out and back in once for this change to take effect).*
-
-### Windows (One-Click Installer)
-
-1. Download and extract the latest [GitHub Release](https://github.com/Doron-Shpigel/motor-dyno-test-bench/releases) or clone the repository:
-   ```cmd
-   git clone https://github.com/Doron-Shpigel/motor-dyno-test-bench.git
-   cd motor-dyno-test-bench
-   ```
-2. Double-click **`install.bat`** (or run `install.bat` in Command Prompt / PowerShell).
-3. The script verifies Python 3.11+, sets up a local `.venv`, and installs all required dependencies.
 
 ---
 

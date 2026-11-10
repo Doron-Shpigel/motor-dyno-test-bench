@@ -36,10 +36,29 @@ The project separates core functionality from optional GUI presentation layers:
 
 ## 3. Installation Guide: Linux & Raspberry Pi
 
-### Step 1: Clone Repository
+### Option 1: Standalone Release Archive (Recommended — No Git Required)
+If you do not want to install Git, download the pre-packaged standalone release:
 ```bash
-git clone https://github.com/doron/motor-dyno-test-bench.git
+# Download release archive directly
+curl -L -O https://github.com/Doron-Shpigel/motor-dyno-test-bench/releases/download/v2.0.0/motor-dyno-test-bench-v2.0.0-linux.tar.gz
+
+# Extract archive
+tar -xzf motor-dyno-test-bench-v2.0.0-linux.tar.gz
+cd motor-dyno-test-bench-v2.0.0
+
+# Run standalone installer (sets up isolated .venv without sudo)
+./install.sh
+```
+
+### Option 2: Clone with Git (For Developers)
+```bash
+# Clone repository (note exact username: Doron-Shpigel)
+git clone https://github.com/Doron-Shpigel/motor-dyno-test-bench.git
 cd motor-dyno-test-bench
+
+# Run standalone installer
+chmod +x install.sh
+./install.sh
 ```
 
 ### Step 2: Configure Serial Port Permissions (`dialout` group)
@@ -56,22 +75,7 @@ Verify your user membership:
 groups | grep dialout
 ```
 
-### Step 3: Zero-Sudo Local Virtual Environment Setup
-You do not need root access to set up the Python environment:
-```bash
-# Create local virtualenv
-python3 -m venv .venv
-
-# Activate virtualenv
-source .venv/bin/activate
-
-# Upgrade pip and install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install pyqtgraph PyQt6 pytest
-```
-
-### Step 4: Launch Applications
+### Step 3: Launch Applications
 ```bash
 # Launch Desktop GUI
 ./run.sh
