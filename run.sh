@@ -52,10 +52,24 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 1
 fi
 
-if [[ "${1:-}" == "--debug" ]]; then
-    echo "Running Dyno Control in foreground (debug mode)..."
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/main.py" "$@"
-else
-    echo "Running Dyno Control in background. Terminal will close."
+# Auto-load bundled X11 libraries (e.g. libxcb-cursor0) so GUI runs with zero sudo
+if [[ "$(uname)" == "Linux" ]]; then
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64)  LIB_ARCH_DIR="$SCRIPT_DIR/libs/x86_64" ;;
+        aarch64|arm64) LIB_ARCH_DIR="$SCRIPT_DIR/libs/aarch64" ;;
+        *)             LIB_ARCH_DIR="" ;;
+    esac
+    if [ -n "$LIB_ARCH_DIR" ] && [ -d "$LIB_ARCH_DIR" ]; then
+        export LD_LIBRARY_PATH="$LIB_ARCH_DIR:${LD_LIBRARY_PATH:-}"
+    fi
+fi
+
+if [[ "${1:-}" == "--bg" ]] || [[ "${1:-}" == "--background" ]]; then
+    shift
+    echo "Running Dyno Control in background..."
     nohup "$PYTHON_BIN" "$SCRIPT_DIR/main.py" "$@" >/dev/null 2>&1 &
+else
+    echo "Launching Dyno Control Desktop GUI..."
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/main.py" "$@"
 fi

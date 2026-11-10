@@ -142,6 +142,21 @@ fi
 
 # 7. Verification check
 echo -e "${BLUE}Running verification test...${NC}"
+
+# Auto-load bundled X11 libraries (libxcb-cursor0) so GUI verifies with zero sudo
+if [[ "$(uname)" == "Linux" ]]; then
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64)  LIB_ARCH_DIR="$SCRIPT_DIR/libs/x86_64" ;;
+        aarch64|arm64) LIB_ARCH_DIR="$SCRIPT_DIR/libs/aarch64" ;;
+        *)             LIB_ARCH_DIR="" ;;
+    esac
+    if [ -n "$LIB_ARCH_DIR" ] && [ -d "$LIB_ARCH_DIR" ]; then
+        export LD_LIBRARY_PATH="$LIB_ARCH_DIR:${LD_LIBRARY_PATH:-}"
+        echo -e "${GREEN}✓ Bundled zero-sudo Linux libraries active:${NC} $LIB_ARCH_DIR"
+    fi
+fi
+
 if "$VENV_PY" -c "import serial, numpy; from modules.engine import DynoEngine; print('OK')" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Core engine & serial drivers verified successfully!${NC}"
 else

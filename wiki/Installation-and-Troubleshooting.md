@@ -150,6 +150,20 @@ Double-click `run.bat` (for GUI) or `run_tui.bat` (for TUI). The scripts will ch
 
 ---
 
+### Issue 2b: "qt.qpa.plugin: From 6.5.0, xcb-cursor0 or libxcb-cursor0 is needed to load the Qt xcb platform plugin"
+- **Cause:** Starting with Qt 6.5.0, the X11 platform plugin requires the `libxcb-cursor.so.0` system library, which is not installed by default on Ubuntu 22.04 / 24.04 and Debian 12.
+- **Solution:**
+  1. Install the missing system library:
+     ```bash
+     sudo apt install -y libxcb-cursor0
+     ```
+  2. Alternatively, run the zero-dependency Terminal User Interface without installing any system libraries:
+     ```bash
+     ./run_tui.sh
+     ```
+
+---
+
 ### Issue 3: "DAC_INIT_ERR: 0x20" or DAC Failure on Startup
 - **Cause:** Arduino cannot communicate with the MCP4725 DAC over I²C.
 - **Solution:**

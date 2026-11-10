@@ -52,6 +52,7 @@ INCLUDED_DIRS = [
     "arduino",
     "tests",
     "scripts",
+    "libs",
 ]
 
 # Patterns and directory names to strictly exclude
