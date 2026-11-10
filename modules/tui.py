@@ -14,7 +14,14 @@ Pure Python curses-based interactive console interface for headless/low-spec sys
 """
 
 from collections import deque
-import curses
+try:
+    import curses
+except (ImportError, ModuleNotFoundError):
+    try:
+        import windows_curses  # type: ignore # noqa: F401
+        import curses
+    except (ImportError, ModuleNotFoundError):
+        curses = None
 import math
 from pathlib import Path
 import time

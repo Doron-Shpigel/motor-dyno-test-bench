@@ -3,3 +3,4 @@ pyqtgraph>=0.13.7
 pyserial>=3.5
 numpy>=1.26.0
 pytest>=8.0.0
+windows-curses>=2.3.3; sys_platform == 'win32'
